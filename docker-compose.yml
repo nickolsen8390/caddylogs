@@ -1,0 +1,85 @@
+# Caddy Log Interface — docker compose stack
+#
+#   web     : Fastify API + built React UI (the only published port)
+#   ingest  : tails Caddy's JSON access logs, enriches, aggregates, prunes
+#
+# All storage is bind-mounted — no named volumes. Three paths, all set in .env:
+#
+#   DATA_PATH           read-write  the SQLite database lives here
+#   CADDY_LOG_HOST_PATH read-only   your Caddy access logs
+#   MAXMIND_HOST_PATH   read-only   GeoLite2 .mmdb files
+#
+# Because bind mounts keep the host's ownership, DATA_PATH must be writable by
+# the UID the containers run as (PUID/PGID below, default 1000). See README §2.
+
+name: caddy-log-interface
+
+x-common: &common
+  build:
+    context: ./app
+    dockerfile: Dockerfile
+  image: caddy-log-interface:latest
+  restart: unless-stopped
+  env_file: .env
+  # Bind mounts carry host ownership, so run as whoever owns DATA_PATH.
+  user: "${PUID:-1000}:${PGID:-1000}"
+  volumes:
+    - ${DATA_PATH:-./data}:/data
+    - ${CADDY_LOG_HOST_PATH:-/var/log/caddy}:/logs:ro
+    - ${MAXMIND_HOST_PATH:-./geoip}:/geoip:ro
+  # Optional /etc/hosts entries inside the containers, for names the container
+  # cannot otherwise reach (NAT hairpin when this stack monitors the same
+  # server that serves the name). Set EXTRA_HOST in .env, e.g.
+  #     EXTRA_HOST=notoolkit.com:host-gateway
+  # `host-gateway` resolves to the Docker host, where Caddy is listening, so
+  # the request reaches it over the bridge with correct SNI and a valid
+  # certificate. Leave EXTRA_HOST blank to disable: the placeholder below is a
+  # deliberately unresolvable name that changes nothing.
+  extra_hosts:
+    - "${EXTRA_HOST:-extra-host-disabled.invalid:127.0.0.1}"
+    - "${EXTRA_HOST_2:-extra-host-2-disabled.invalid:127.0.0.1}"
+  # Hardening: no new privileges, read-only root fs, drop all capabilities.
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  web:
+    <<: *common
+    container_name: cli-web
+    environment:
+      TZ: ${TZ:-UTC}
+      DB_PATH: /data/stats.db
+      LOG_DIR: /logs
+      APP_MODE: web
+    command: ["node", "src/index.js"]
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:${APP_PORT:-8899}:8899"
+    depends_on:
+      ingest:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "node", "src/tools/healthcheck.js"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  ingest:
+    <<: *common
+    container_name: cli-ingest
+    environment:
+      TZ: ${TZ:-UTC}
+      DB_PATH: /data/stats.db
+      LOG_DIR: /logs
+      APP_MODE: ingest
+    command: ["node", "src/index.js"]

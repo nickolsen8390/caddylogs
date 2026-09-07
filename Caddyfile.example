@@ -1,0 +1,119 @@
+# --------------------------------------------------------------------------
+#  1. Make sure Caddy writes JSON access logs somewhere this stack can read.
+#     Put this in your global options or per-site block.
+# --------------------------------------------------------------------------
+
+# Per-site (recommended — one file, every host):
+#
+#   example.com, www.example.com {
+#       log {
+#           output file /var/log/caddy/access.log {
+#               roll_size     100MiB
+#               roll_keep     10
+#               roll_keep_for 720h
+#           }
+#           format json
+#       }
+#       # ... your handlers
+#   }
+#
+# Or globally, so every site logs to the same file:
+#
+#   {
+#       log default {
+#           output file /var/log/caddy/access.log {
+#               roll_size 100MiB
+#               roll_keep 10
+#           }
+#           format json
+#       }
+#   }
+#
+# Rotation is fine: the ingester follows files by inode, so a rotated file is
+# finished before it is dropped and statistics already stored are never lost.
+#
+# If Caddy itself sits behind another proxy (Cloudflare, a load balancer), set
+# trusted_proxies so `client_ip` in the log is the real visitor:
+#
+#   {
+#       servers {
+#           trusted_proxies static 173.245.48.0/20 103.21.244.0/22
+#           client_ip_headers CF-Connecting-IP X-Forwarded-For
+#       }
+#   }
+
+
+# --------------------------------------------------------------------------
+#  2. Reverse-proxy the dashboard (optional but recommended).
+#     Replace logs.example.com and the port with your own.
+# --------------------------------------------------------------------------
+
+logs.example.com {
+	# The app sets its own HSTS, CSP, nosniff and frame-deny headers.
+
+	# Restricting by source IP: use `handle` blocks rather than a bare
+	# `respond`. Caddy sorts top-level directives into its own canonical order,
+	# which is not the order you wrote them in; `handle` blocks are mutually
+	# exclusive and evaluated top to bottom, so the intent is unambiguous.
+	@notlocal not remote_ip 203.0.113.0/24 198.51.100.7
+	handle @notlocal {
+		respond 403
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:8899 {
+			# Server-sent events must not be buffered, or the live log view
+			# stalls and the stream page never updates.
+			flush_interval -1
+		}
+	}
+
+	log {
+		output file /var/log/caddy/access.log
+		format json
+	}
+}
+
+
+# --------------------------------------------------------------------------
+#  Internal-only hostnames (stats.int.example.com, *.lan, *.home.arpa ...)
+# --------------------------------------------------------------------------
+#
+# Automatic HTTPS uses ACME, which needs the name to be publicly resolvable and
+# reachable. For an internal-only name that validation cannot succeed, so Caddy
+# never gets a certificate and the site is not served over working HTTPS.
+#
+# That matters here beyond the browser warning: with COOKIE_SECURE=true the app
+# refuses to sign you in over plain HTTP, because the browser would silently
+# discard the Secure session cookie. Pick one of these.
+#
+# (a) Caddy's own local CA. Simplest. Browsers will warn until the root is
+#     trusted; run `caddy trust` on machines you control, or distribute
+#     Caddy's root from /var/lib/caddy/.local/share/caddy/pki/authorities/local
+#
+#     stats.int.example.com {
+#         tls internal
+#         handle { reverse_proxy 127.0.0.1:8899 { flush_interval -1 } }
+#     }
+#
+# (b) A publicly-trusted certificate via the DNS-01 challenge, which never
+#     needs the host to be reachable. Requires a Caddy build with your DNS
+#     provider's plugin (xcaddy build --with github.com/caddy-dns/<provider>).
+#     No browser warnings, and it works for split-horizon DNS.
+#
+#     stats.int.example.com {
+#         tls { dns <provider> {env.DNS_API_TOKEN} }
+#         handle { reverse_proxy 127.0.0.1:8899 { flush_interval -1 } }
+#     }
+#
+# (c) Accept plain HTTP on a trusted, IP-restricted network and set
+#     COOKIE_SECURE=false in .env. The weakest option: credentials and session
+#     cookie cross the network unencrypted. Never do this on the internet.
+
+# If you publish the container on 0.0.0.0 (the default in .env.example) and
+# also proxy it here, consider firewalling the raw port so the only route in is
+# through Caddy and its TLS:
+#
+#   ufw deny 8899/tcp
+#
+# ...or set BIND_ADDRESS=127.0.0.1 in .env, which is tidier.
