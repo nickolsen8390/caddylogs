@@ -274,11 +274,25 @@ html[data-theme='light'] .bar-fill { background: color-mix(in srgb, var(--accent
   font-family: var(--mono); font-size: 12px; line-height: 1.55;
   overflow: auto; flex: 1; min-height: 0;
 }
+/* Columns: time | status | method | URL | size | duration | source.
+   The URL column must be minmax(0, 1fr), not 1fr: bare `1fr` means
+   minmax(auto, 1fr), and `auto` resolves to the min-content of a nowrap URL —
+   its full width — so a long URL used to push the source column off the edge.
+   The source column is sized in `ch` (this is a monospace view) to fit a full
+   IPv4 address plus its flag, and most IPv6 addresses; longer IPv6 addresses
+   ellipsize, with the whole value in the tooltip and one click away. */
 .log-row {
   display: grid;
-  grid-template-columns: 88px 52px 56px 1fr 62px 76px 68px;
+  grid-template-columns: 88px 44px 60px minmax(0, 1fr) 64px 72px 26ch;
   gap: 10px; padding: 3px 12px; border-bottom: 1px solid var(--border-soft);
   cursor: pointer; align-items: baseline;
+}
+.log-row > * { min-width: 0; }
+.log-row .col-ip a:hover { color: var(--blue); text-decoration: underline; }
+@media (max-width: 1100px) {
+  /* Drop response size first on narrow screens; the source stays visible. */
+  .log-row { grid-template-columns: 76px 40px 52px minmax(0, 1fr) 64px 26ch; }
+  .log-row .col-size { display: none; }
 }
 .log-row:hover { background: var(--panel-2); }
 .log-row.open { background: var(--panel-2); }

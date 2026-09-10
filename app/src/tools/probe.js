@@ -1,16 +1,30 @@
 // Connectivity probe for the notoolkit API, run from inside the container so
 // it tests the network path the enricher actually uses.
 //
-//   docker compose run --rm --no-deps ingest node src/tools/probe.js [ip]
+//   docker compose run --rm --no-deps ingest node src/tools/probe.js [ip] [--force]
 //
-// Touches no database and writes nothing.
+// Touches no database and writes nothing. Respects NOTOOLKIT_ENABLED=false:
+// with lookups disabled for offline operation, it makes no network request
+// unless --force is given.
 
 import dns from 'node:dns/promises';
 import net from 'node:net';
 import { config } from '../config.js';
 import { describeRequest } from '../enrich/notoolkit.js';
 
-const testIp = process.argv[2] || '8.8.8.8';
+const args = process.argv.slice(2);
+const force = args.includes('--force');
+const testIp = args.find((a) => !a.startsWith('--')) || '8.8.8.8';
+
+if (!config.notoolkit.enabled && !force) {
+  console.log('notoolkit lookups are disabled (NOTOOLKIT_ENABLED=false).');
+  console.log('The stack makes no calls to notoolkit.com in this mode, so there is');
+  console.log('nothing to probe. Country data still comes from MaxMind, and ASNs from');
+  console.log('GeoLite2-ASN.mmdb if that file is present.');
+  console.log('');
+  console.log('To test connectivity anyway, without changing .env, add --force.');
+  process.exit(0);
+}
 
 const { url, headers } = describeRequest({ ip: testIp });
 const target = new URL(url);

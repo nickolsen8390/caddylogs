@@ -204,10 +204,22 @@ export function RequestRow({ row, expanded, onToggle, context }) {
           {row.path}
           {row.query ? <span className="faint">?{row.query}</span> : null}
         </span>
-        <span className="faint" style={{ textAlign: 'right' }}>{bytes(row.bytes_out)}</span>
+        <span className="faint col-size" style={{ textAlign: 'right' }}>{bytes(row.bytes_out)}</span>
         <span className="faint" style={{ textAlign: 'right' }}>{ms(row.dur_ms)}</span>
-        <span className="truncate faint" title={`${row.ip ?? ''} ${row.as_org ?? ''}`}>
-          {row.country ? flag(row.country) : ''} {row.ip}
+        <span
+          className="truncate col-ip"
+          title={`${row.ip ?? ''}${row.as_org ? ` · ${row.as_org}` : ''}`}
+        >
+          {row.country ? `${flag(row.country)} ` : ''}
+          {row.ip ? (
+            // Straight to the address's own page; stopPropagation so the click
+            // navigates instead of also toggling the row open.
+            <Link to={drillTo('ip', row.ip, context)} onClick={(e) => e.stopPropagation()}>
+              {row.ip}
+            </Link>
+          ) : (
+            <span className="faint">—</span>
+          )}
         </span>
       </div>
       {expanded && <ExpandedRequest row={row} context={context} />}

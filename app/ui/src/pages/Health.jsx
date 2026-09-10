@@ -67,7 +67,11 @@ export default function Health({ ctx }) {
                 <dt>Purpose</dt>
                 <dd>BGP prefix, originating ASN, and RIR registrant detail</dd>
                 <dt>ASNs pending detail</dt>
-                <dd>{num(enrichment.asnPending ?? 0)} awaiting their one-off registry lookup</dd>
+                <dd>
+                  {enrichment.notoolkitEnabled
+                    ? `${num(enrichment.asnPending ?? 0)} awaiting their one-off registry lookup`
+                    : 'none — lookups are disabled (NOTOOLKIT_ENABLED=false), running offline'}
+                </dd>
                 <dt>Calls</dt>
                 <dd>{num(notoolkit?.calls ?? 0)} ({num(notoolkit?.failures ?? 0)} failed)</dd>
                 <dt>Last success</dt>
