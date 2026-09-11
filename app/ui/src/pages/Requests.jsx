@@ -1,34 +1,82 @@
 // The request explorer: any dimension value from anywhere in the app resolves
-// here, as a filtered list of the individual requests behind it.
+// here, as a filtered list of the individual requests behind it. Filters can
+// also be built directly — with the field row, or typed into the search box as
+// key:value terms (host:example.com ua:curl status:4xx).
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api, qs, ApiError } from '../lib/api.js';
+import { useApi } from '../lib/useApi.js';
 import { Banner, Chip, Loading, Panel } from '../components/ui.jsx';
 import { RequestList } from '../components/RequestList.jsx';
 import { FILTER_KEYS, FILTER_LABELS, filterValueLabel } from '../lib/drill.js';
+import { normalizeFilterValue, parseSearch } from '../lib/search.js';
 import { compact, num, relative } from '../lib/format.js';
 
 const PAGE = 100;
 
+/** Filters edited through the field row. Anything else stays a removable chip. */
+const BAR_KEYS = ['host', 'ip', 'status', 'method', 'pathq', 'uaq', 'country', 'asn', 'bots'];
+/** What the live stream understands, for the "Watch live" hand-off. */
+const LIVE_KEYS = ['host', 'ip', 'status', 'method', 'bots', 'q'];
+const EMPTY_DRAFT = Object.fromEntries(BAR_KEYS.map((k) => [k, '']));
+
+function pick(obj, keys) {
+  const out = {};
+  for (const k of keys) if (obj[k]) out[k] = obj[k];
+  return out;
+}
+
+function withoutEmpty(obj) {
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== undefined && v !== null && String(v).trim() !== '') out[k] = String(v).trim();
+  }
+  return out;
+}
+
 export default function Requests({ ctx }) {
   const [params, setParams] = useSearchParams();
+  const paramString = params.toString();
+
+  // The filter set lives entirely in the URL: every view is a shareable link,
+  // and the back button behaves.
+  const active = useMemo(() => {
+    const out = {};
+    const p = new URLSearchParams(paramString);
+    for (const key of FILTER_KEYS) {
+      const v = p.get(key);
+      if (v !== null && v !== '') out[key] = v;
+    }
+    return out;
+  }, [paramString]);
+
+  // Editable copies of the filters. They follow the URL, so arriving by a
+  // drill-down link, removing a chip or pressing back all update the fields.
+  const [draft, setDraft] = useState(() => ({ ...EMPTY_DRAFT, ...pick(active, BAR_KEYS) }));
+  const [search, setSearch] = useState(active.q ?? '');
+  useEffect(() => {
+    setDraft({ ...EMPTY_DRAFT, ...pick(active, BAR_KEYS) });
+    setSearch(active.q ?? '');
+  }, [active]);
+
+  const domains = useApi('/api/domains?range=7d', { onUnauthorized: ctx?.onUnauthorized });
+  const hostOptions = useMemo(() => {
+    const list = (domains.data?.rows ?? []).map((r) => r.host).sort();
+    if (active.host && !list.includes(active.host)) list.unshift(active.host);
+    return list;
+  }, [domains.data, active.host]);
+
   const [rows, setRows] = useState([]);
   const [cursor, setCursor] = useState(null);
-  const [meta, setMeta] = useState(null);
+  const [paging, setPaging] = useState(null);
+  const [total, setTotal] = useState(null);
+  const [retention, setRetention] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(null);
-  const [search, setSearch] = useState(params.get('q') ?? '');
   const reqId = useRef(0);
 
-  // The filter set is entirely in the URL, so every view is shareable and the
-  // back button behaves.
-  const active = {};
-  for (const key of FILTER_KEYS) {
-    const v = params.get(key);
-    if (v !== null && v !== '') active[key] = v;
-  }
   const query = qs({ ...active, limit: PAGE, count: 1 });
 
   const load = useCallback(async () => {
@@ -40,7 +88,9 @@ export default function Requests({ ctx }) {
       if (reqId.current !== mine) return;
       setRows(res.rows ?? []);
       setCursor(res.nextCursor ?? null);
-      setMeta(res);
+      setPaging({ windowed: res.windowed, pageFull: res.pageFull, searchedBackTo: res.searchedBackTo });
+      setTotal(res.total ?? null);
+      setRetention({ hours: res.retentionHours, from: res.retainedFrom });
     } catch (err) {
       if (reqId.current !== mine) return;
       setError(err);
@@ -60,6 +110,7 @@ export default function Requests({ ctx }) {
       const res = await api.get(`/api/requests${qs({ ...active, limit: PAGE, before: cursor })}`);
       setRows((prev) => prev.concat(res.rows ?? []));
       setCursor(res.nextCursor ?? null);
+      setPaging({ windowed: res.windowed, pageFull: res.pageFull, searchedBackTo: res.searchedBackTo });
     } catch (err) {
       setError(err);
     } finally {
@@ -67,70 +118,125 @@ export default function Requests({ ctx }) {
     }
   }
 
+  function applyFilters(e) {
+    e?.preventDefault();
+    const { structured, q } = parseSearch(search);
+    // Filters that are not on the field row (a browser or TLS version from a
+    // drill-down link, say) carry over. Typed key:value terms win over fields.
+    const carried = {};
+    for (const [k, v] of Object.entries(active)) {
+      if (!BAR_KEYS.includes(k) && k !== 'q') carried[k] = v;
+    }
+    const fields = {};
+    for (const k of BAR_KEYS) fields[k] = normalizeFilterValue(k, draft[k]);
+    setParams(withoutEmpty({ ...carried, ...fields, ...structured, q }));
+  }
+
   function removeFilter(key) {
     const next = { ...active };
     delete next[key];
-    setParams(next, { replace: false });
-    if (key === 'q') setSearch('');
-  }
-
-  function applySearch(e) {
-    e.preventDefault();
-    const next = { ...active };
-    if (search.trim()) next.q = search.trim();
-    else delete next.q;
     setParams(next);
   }
 
+  const field = (key) => ({
+    value: draft[key],
+    onChange: (e) => setDraft((d) => ({ ...d, [key]: e.target.value })),
+  });
+
   const chips = Object.entries(active);
   const host = active.host ?? null;
+  // Stopped at its time budget rather than at the end of the data.
+  const searchedPartway = paging?.windowed && !paging?.pageFull && cursor !== null;
 
   return (
     <>
-      <div className="hstack" style={{ marginBottom: 12, justifyContent: 'space-between' }}>
-        <div className="hstack" style={{ gap: 8, flexWrap: 'wrap' }}>
-          {chips.length === 0 ? (
-            <span className="faint">
-              No filters — showing the most recent requests. Click any value elsewhere in the app to
-              filter here.
-            </span>
-          ) : (
-            chips.map(([key, value]) => (
-              <button
-                key={key}
-                className="chip info"
-                title={`Remove the ${FILTER_LABELS[key] ?? key} filter`}
-                onClick={() => removeFilter(key)}
-                style={{ cursor: 'pointer', maxWidth: 380 }}
-              >
-                <span className="faint">{FILTER_LABELS[key] ?? key}:</span>
-                <span className="truncate" style={{ display: 'inline-block', maxWidth: 260 }}>
-                  {filterValueLabel(key, value)}
-                </span>
-                <span aria-hidden="true">×</span>
-              </button>
-            ))
-          )}
-          {chips.length > 1 && (
-            <button className="btn sm" onClick={() => setParams({})}>
-              Clear all
-            </button>
-          )}
-        </div>
-
-        <form className="hstack" onSubmit={applySearch} style={{ gap: 6 }}>
+      <form className="panel filter-bar" onSubmit={applyFilters} style={{ marginBottom: 12 }}>
+        <div className="filter-search">
           <input
             className="input"
-            style={{ width: 230 }}
-            placeholder="search URL / agent / referrer"
+            aria-label="Search requests"
+            placeholder='Search anything, or use terms:  host:example.com  ua:curl  status:4xx  url:/wp-login  ip:1.2.3.4'
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
-          <button className="btn sm primary" type="submit">
-            Search
-          </button>
-        </form>
-      </div>
+          <button className="btn sm primary" type="submit">Search</button>
+          <button className="btn sm" type="button" onClick={() => setParams({})}>Reset</button>
+        </div>
+        <div className="filter-fields">
+          <label>
+            Domain
+            <select className="input" {...field('host')}>
+              <option value="">Any domain</option>
+              {hostOptions.map((h) => (
+                <option key={h} value={h}>{h}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Source IP
+            <input className="input mono" placeholder="203.0.113.9" {...field('ip')} />
+          </label>
+          <label>
+            Status
+            <input className="input" placeholder="404 or 4xx" {...field('status')} />
+          </label>
+          <label>
+            Method
+            <select className="input" {...field('method')}>
+              <option value="">Any method</option>
+              {['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            URL contains
+            <input className="input mono" placeholder="/wp-login" {...field('pathq')} />
+          </label>
+          <label>
+            User agent contains
+            <input className="input" placeholder="curl, Googlebot…" {...field('uaq')} />
+          </label>
+          <label>
+            Country
+            <input className="input" placeholder="US" maxLength={2} {...field('country')} />
+          </label>
+          <label>
+            ASN
+            <input className="input mono" placeholder="15169" {...field('asn')} />
+          </label>
+          <label>
+            Traffic
+            <select className="input" {...field('bots')}>
+              <option value="">Bots &amp; humans</option>
+              <option value="exclude">Humans only</option>
+              <option value="only">Bots only</option>
+            </select>
+          </label>
+        </div>
+      </form>
+
+      {chips.length > 0 && (
+        <div className="hstack" style={{ gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+          <span className="faint" style={{ fontSize: 11.5 }}>Filtering by</span>
+          {chips.map(([key, value]) => (
+            <button
+              key={key}
+              type="button"
+              className="chip info"
+              title={`Remove the ${FILTER_LABELS[key] ?? key} filter`}
+              onClick={() => removeFilter(key)}
+              style={{ maxWidth: 380 }}
+            >
+              <span className="faint">{FILTER_LABELS[key] ?? key}:</span>
+              <span className="truncate" style={{ display: 'inline-block', maxWidth: 260 }}>
+                {filterValueLabel(key, value)}
+              </span>
+              <span aria-hidden="true">×</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       {error && (
         <Banner level="error">
@@ -140,16 +246,11 @@ export default function Requests({ ctx }) {
         </Banner>
       )}
 
-      {meta?.retentionHours && (
+      {retention?.hours && (
         <Banner level="info">
-          Individual requests are retained for <strong>{meta.retentionHours} hours</strong>
-          {meta.retainedFrom ? (
-            <>
-              {' '}
-              — the oldest still stored is from {relative(meta.retainedFrom)}
-            </>
-          ) : null}
-          . Aggregate statistics reach much further back; use the{' '}
+          Individual requests are retained for <strong>{retention.hours} hours</strong>
+          {retention.from ? <> — the oldest still stored is from {relative(retention.from)}</> : null}.
+          Aggregate statistics reach much further back; use the{' '}
           <Link to="/domains">domain pages</Link> for historical analysis.
         </Banner>
       )}
@@ -159,18 +260,18 @@ export default function Requests({ ctx }) {
         flush
         actions={
           <div className="hstack" style={{ gap: 6 }}>
-            {meta?.total && (
-              <Chip title={meta.total.capped ? 'Counting stopped at the cap' : undefined}>
-                {meta.total.capped ? `${compact(meta.total.count)}+` : num(meta.total.count)} total
+            {total ? (
+              <Chip title={total.capped ? 'Counting stopped at the cap' : undefined}>
+                {total.capped ? `${compact(total.count)}+` : num(total.count)} total
               </Chip>
-            )}
-            <Chip>{num(rows.length)} loaded</Chip>
+            ) : null}
+            <Chip>{num(rows.length)} shown</Chip>
             {host && (
               <Link className="btn sm" to={`/domains/${encodeURIComponent(host)}`}>
                 Domain overview
               </Link>
             )}
-            <Link className="btn sm" to={`/logs${qs(active)}`}>
+            <Link className="btn sm" to={`/logs${qs(pick(active, LIVE_KEYS))}`}>
               Watch live
             </Link>
           </div>
@@ -185,20 +286,37 @@ export default function Requests({ ctx }) {
               context={{ host, range: ctx?.range }}
               className="log-view"
               empty={
-                <>
-                  No requests match these filters within the last {meta?.retentionHours ?? '?'} hours.
-                  {chips.length > 0 && ' Try removing a filter, or widening to the live stream.'}
-                </>
+                searchedPartway ? (
+                  <>
+                    No matches among requests back to{' '}
+                    {paging.searchedBackTo ? relative(paging.searchedBackTo) : 'the searched range'}.
+                    Older requests have not been searched yet.
+                  </>
+                ) : (
+                  <>
+                    No requests match these filters within the last {retention?.hours ?? '?'} hours.
+                    {chips.length > 0 && ' Try removing a filter, or widening to the live stream.'}
+                  </>
+                )
               }
             />
-            {cursor && (
+            {cursor !== null && (
               <div style={{ padding: 12, textAlign: 'center' }}>
+                {searchedPartway && paging.searchedBackTo && rows.length > 0 && (
+                  <div className="faint" style={{ fontSize: 11.5, marginBottom: 8 }}>
+                    Searched back to {relative(paging.searchedBackTo)}.
+                  </div>
+                )}
                 <button className="btn" onClick={loadMore} disabled={loadingMore}>
-                  {loadingMore ? 'Loading…' : `Load ${PAGE} more`}
+                  {loadingMore
+                    ? 'Searching…'
+                    : searchedPartway
+                      ? 'Search older requests'
+                      : `Load ${PAGE} more`}
                 </button>
               </div>
             )}
-            {!cursor && rows.length > 0 && (
+            {cursor === null && rows.length > 0 && (
               <div className="empty" style={{ padding: 14 }}>
                 End of results.
               </div>

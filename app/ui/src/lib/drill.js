@@ -85,6 +85,8 @@ export const FILTER_LABELS = {
   lat: 'Latency',
   bots: 'Traffic',
   q: 'Search',
+  uaq: 'Agent contains',
+  pathq: 'URL contains',
   minDur: 'Slower than',
   from: 'From',
   to: 'To',

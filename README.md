@@ -164,6 +164,24 @@ If you routinely need to inspect requests further back, raise
 Filters live entirely in the URL, so any drill-down is a shareable link and the
 back button behaves.
 
+On the Requests page you can also build filters directly — from the field row,
+or by typing terms into the search box:
+
+```
+host:example.com  ua:curl  status:4xx  url:/wp-login  ip:203.0.113.9
+country:US  asn:15169  ref:google.com  bot:yes  "exact phrase"
+```
+
+`ua:` and `url:` match anywhere in the value; quote a value that contains
+spaces (`ua:"Mozilla/5.0 (X11"`). Anything that is not a term is matched as
+free text across URL, agent, referrer, address and host.
+
+Broad searches walk the retained requests newest-first in bounded chunks and
+stop after about half a second, so a search can never stall the server. If one
+stops before filling a page, it says how far back it got and offers **Search
+older requests** to continue. Filtering by source IP goes straight to the
+matching rows and is not limited this way.
+
 ### Rotation handling
 
 The tailer tracks files by **inode**, not path. When Caddy rotates

@@ -497,6 +497,18 @@ function eventFilters(f, params) {
     params.q = likePattern(f.q);
   }
 
+  // Substring matches, for values impractical to type exactly — a full
+  // User-Agent string, or a URL whose tail varies. (`ua` and `path` above are
+  // exact, which is what drill-down links need.)
+  if (f.uaq) {
+    parts.push("ua LIKE @uaq ESCAPE '\\'");
+    params.uaq = likePattern(f.uaq);
+  }
+  if (f.pathq) {
+    parts.push("path LIKE @pathq ESCAPE '\\'");
+    params.pathq = likePattern(f.pathq);
+  }
+
   return parts.length ? 'AND ' + parts.join(' AND ') : '';
 }
 
@@ -504,43 +516,120 @@ function eventFilters(f, params) {
 export const EVENT_FILTER_KEYS = [
   'host', 'ip', 'asn', 'country', 'status', 'method', 'path', 'ua', 'browser',
   'os', 'device', 'referer', 'proto', 'tls', 'cipher', 'ext', 'lat', 'bots',
-  'q', 'minDur', 'from', 'to',
+  'q', 'uaq', 'pathq', 'minDur', 'from', 'to',
 ];
 
+// Most filters here cannot use an index — a substring match on a User-Agent,
+// an equality on an unindexed column — so an unlucky search used to read every
+// retained row, twice (rows, then a count), on the web process's only thread.
+// At a few hundred thousand requests an hour that is millions of rows and
+// seconds during which every other API call, and the live stream, stalled.
+// Instead, searches walk the table newest-first in bounded id windows and stop
+// at a time budget; paging resumes exactly where the walk stopped.
+const SCAN_WINDOW = 100_000;
+const SCAN_BUDGET_MS = 500;
+
+/** Filters selective enough that the planner goes straight to the rows. */
+function isSelective(f) {
+  return Boolean(f.ip);
+}
+
+function parseCursor(before) {
+  if (before === null || before === undefined || before === '') return null;
+  const n = parseInt(before, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
 /**
- * Paginated request search. Descending by id (newest first); pass the last id
- * seen as `before` to continue.
- * @returns {{rows:object[], nextCursor:number|null, window:{from:number|null}}}
+ * Paginated request search, newest first. Pass `nextCursor` back as `before`
+ * to continue.
+ *
+ * `windowed` means the search walked the table in bounded chunks. When it
+ * returns fewer than a page with a non-null `nextCursor`, it stopped at its
+ * time budget, not at the end of the data: `searchedBackTo` says how far back
+ * it got, and following the cursor searches older requests.
  */
 export function searchEvents(filters = {}, { limit = 100, before = null } = {}) {
+  const db = getDb();
   const capped = Math.min(500, Math.max(1, limit));
-  const params = { limit: capped + 1 };
-  const where = eventFilters(filters, params);
+  const cursor = parseCursor(before);
+  const base = {};
+  const where = eventFilters(filters, base);
 
-  let cursorClause = '';
-  if (before !== null && before !== undefined && before !== '') {
-    const n = parseInt(before, 10);
-    if (Number.isFinite(n)) {
-      cursorClause = 'AND id < @before';
-      params.before = n;
-    }
+  if (isSelective(filters)) {
+    const params = { ...base, limit: capped + 1 };
+    if (cursor !== null) params.before = cursor;
+    const rows = db
+      .prepare(
+        `SELECT ${EVENT_COLUMNS} FROM events
+          WHERE 1=1 ${where} ${cursor !== null ? 'AND id < @before' : ''}
+          ORDER BY id DESC LIMIT @limit`
+      )
+      .all(params);
+    // One extra row was requested purely to detect whether more exist.
+    const pageFull = rows.length > capped;
+    if (pageFull) rows.length = capped;
+    return {
+      rows,
+      nextCursor: pageFull ? rows[rows.length - 1].id : null,
+      windowed: false,
+      pageFull,
+      searchedBackTo: null,
+      retainedFrom: oldestRetainedEvent(),
+    };
   }
 
-  const rows = getDb()
-    .prepare(
-      `SELECT ${EVENT_COLUMNS} FROM events
-        WHERE 1=1 ${where} ${cursorClause}
-        ORDER BY id DESC LIMIT @limit`
-    )
-    .all(params);
+  const bounds = db.prepare('SELECT MIN(id) AS lo, MAX(id) AS hi FROM events').get();
+  if (!bounds.hi) {
+    return {
+      rows: [], nextCursor: null, windowed: true, pageFull: false,
+      searchedBackTo: null, retainedFrom: null,
+    };
+  }
 
-  // One extra row was requested purely to detect whether more exist.
-  const hasMore = rows.length > capped;
-  if (hasMore) rows.length = capped;
+  const stmt = db.prepare(
+    `SELECT ${EVENT_COLUMNS} FROM events
+      WHERE id < @top AND id >= @floor ${where}
+      ORDER BY id DESC LIMIT @need`
+  );
+
+  const rows = [];
+  let top = cursor ?? bounds.hi + 1; // exclusive upper bound of the next window
+  let exhausted = false;
+  const started = Date.now();
+
+  while (rows.length <= capped) {
+    const floor = Math.max(bounds.lo, top - SCAN_WINDOW);
+    const got = stmt.all({ ...base, top, floor, need: capped + 1 - rows.length });
+    for (const r of got) rows.push(r);
+    if (rows.length > capped) break; // page filled inside this window
+    top = floor; // this window is spent
+    if (floor <= bounds.lo) {
+      exhausted = true;
+      break;
+    }
+    if (Date.now() - started > SCAN_BUDGET_MS) break;
+  }
+
+  const pageFull = rows.length > capped;
+  if (pageFull) rows.length = capped;
+
+  let nextCursor = null;
+  let searchedBackTo = null;
+  if (pageFull) {
+    nextCursor = rows[rows.length - 1].id;
+  } else if (!exhausted) {
+    nextCursor = top;
+    searchedBackTo =
+      db.prepare('SELECT ts FROM events WHERE id >= ? ORDER BY id LIMIT 1').get(top)?.ts ?? null;
+  }
 
   return {
     rows,
-    nextCursor: hasMore && rows.length ? rows[rows.length - 1].id : null,
+    nextCursor,
+    windowed: true,
+    pageFull,
+    searchedBackTo,
     retainedFrom: oldestRetainedEvent(),
   };
 }

@@ -167,8 +167,10 @@ export async function registerApi(app) {
       // Requests are only retained for the raw window, so the UI can say
       // "nothing in the last N hours" instead of implying "never happened".
       retentionHours: config.retention.rawHours,
-      // Only counted when the caller asks: it is a scan.
-      total: req.query.count === '1' ? Q.countEvents(req.query) : null,
+      // A count cannot stop early, so it is only taken when the query is
+      // selective enough to be cheap. Broad searches report it as unknown
+      // rather than blocking the server to find out.
+      total: req.query.count === '1' && !result.windowed ? Q.countEvents(req.query) : null,
     };
   });
 
