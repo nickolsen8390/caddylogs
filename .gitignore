@@ -1,7 +1,0 @@
-.env
-data/
-geoip/*.mmdb
-node_modules/
-app/ui/dist/
-app/public/
-*.log
