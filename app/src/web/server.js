@@ -15,6 +15,7 @@ import {
   destroySession, recordLoginAttempt, isLockedOut, cookieOptions, clientIp, secureContextDiagnosis,
 } from './auth.js';
 import { registerApi } from './routes.js';
+import { registerCaddyApi } from './caddy.js';
 import { initMaxmind } from '../enrich/maxmind.js';
 
 const log = logger('web');
@@ -214,6 +215,7 @@ export async function buildServer() {
   // -------------------------------------------------------------------------
 
   await registerApi(app);
+  await registerCaddyApi(app);
 
   app.get('/healthz', async () => ({ ok: true }));
 
@@ -236,6 +238,7 @@ export async function buildServer() {
   app.setErrorHandler((err, req, reply) => {
     if (err.validation) return reply.code(400).send({ error: 'bad_request' });
     if (err.statusCode === 429) return reply.code(429).send({ error: 'rate_limited' });
+    if (err.statusCode === 413) return reply.code(413).send({ error: 'too_large' });
     log.error('request failed', { url: req.url, err: String(err.message), stack: err.stack });
     // Never leak internals to the client.
     return reply.code(500).send({ error: 'internal_error' });

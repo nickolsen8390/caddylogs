@@ -99,6 +99,23 @@ export const config = {
     pollMs: Math.max(100, int(env.STREAM_POLL_MS, 400)),
     maxPerTick: int(env.STREAM_MAX_EVENTS_PER_TICK, 300),
   },
+
+  caddy: {
+    // Master switch for the Caddy configuration pages.
+    enabled: bool(env.CADDY_MANAGE, true),
+    // The Caddyfile as seen inside this container. Its DIRECTORY is the mount,
+    // so saves can be atomic (write a temp file, rename over the original).
+    caddyfile: env.CADDYFILE_PATH || '/caddy/Caddyfile',
+    // Caddy's admin endpoint. A unix socket shared through a bind mount keeps
+    // the admin API off the network entirely. Same syntax Caddy uses:
+    //   unix//run/caddy/admin.sock     or     http://127.0.0.1:2019
+    admin: env.CADDY_ADMIN_ADDRESS || 'unix//run/caddy/admin.sock',
+    timeoutMs: int(env.CADDY_ADMIN_TIMEOUT_MS, 15000),
+    // Usernames allowed to change the configuration. Empty = every user.
+    editors: list(env.CADDY_EDITORS),
+    // Past versions of the Caddyfile kept for restore.
+    historyKeep: Math.max(5, int(env.CADDY_HISTORY_KEEP, 100)),
+  },
 };
 
 /** Fatal-check configuration that the process cannot run without. */

@@ -196,3 +196,17 @@ CREATE TABLE IF NOT EXISTS ingest_stats (
   skipped    INTEGER NOT NULL DEFAULT 0,
   malformed  INTEGER NOT NULL DEFAULT 0
 );
+
+-- Every version of the Caddyfile this interface has applied, plus the on-disk
+-- version it replaced the first time, so any change can be rolled back.
+CREATE TABLE IF NOT EXISTS caddy_history (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts        INTEGER NOT NULL,
+  username  TEXT,
+  action    TEXT NOT NULL,   -- apply | restore | reload | baseline
+  message   TEXT,
+  hash      TEXT NOT NULL,
+  size      INTEGER NOT NULL,
+  text      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_caddy_history_ts ON caddy_history(ts);

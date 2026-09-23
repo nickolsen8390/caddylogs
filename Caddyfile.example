@@ -1,29 +1,36 @@
+# Starting Caddyfile for the combined stack. Copy it to
+# $CADDY_CONF_PATH/Caddyfile (default ./caddy/conf/Caddyfile), then manage it
+# from the interface's Caddy pages.
+#
+# Do NOT add an `admin` global option: docker-compose.yml puts Caddy's admin
+# API on a unix socket (CADDY_ADMIN), which is how the interface reloads it.
+
 # --------------------------------------------------------------------------
-#  1. Make sure Caddy writes JSON access logs somewhere this stack can read.
-#     Put this in your global options or per-site block.
+#  1. JSON access logs this stack can read. Every site that should appear in
+#     the statistics imports this snippet:  import logging
 # --------------------------------------------------------------------------
 
-# Per-site (recommended — one file, every host):
-#
-#   example.com, www.example.com {
-#       log {
-#           output file /var/log/caddy/access.log {
-#               roll_size     100MiB
-#               roll_keep     10
-#               roll_keep_for 720h
-#           }
-#           format json
-#       }
-#       # ... your handlers
-#   }
-#
-# Or globally, so every site logs to the same file:
+(logging) {
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 100MiB
+			roll_keep 10
+			roll_keep_for 720h
+			# Caddy creates log files 0600 by default: readable only by
+			# Caddy (root). The log interface runs as PUID, so it needs
+			# world-readable files. Caddy 2.8+.
+			mode 0644
+		}
+		format json
+	}
+}
+
+# Or log every site without importing anything, from the global options:
 #
 #   {
 #       log default {
 #           output file /var/log/caddy/access.log {
-#               roll_size 100MiB
-#               roll_keep 10
+#               mode 0644
 #           }
 #           format json
 #       }
@@ -49,6 +56,7 @@
 # --------------------------------------------------------------------------
 
 logs.example.com {
+	import logging
 	# The app sets its own HSTS, CSP, nosniff and frame-deny headers.
 
 	# Restricting by source IP: use `handle` blocks rather than a bare
@@ -67,11 +75,6 @@ logs.example.com {
 			flush_interval -1
 		}
 	}
-
-	log {
-		output file /var/log/caddy/access.log
-		format json
-	}
 }
 
 
@@ -88,8 +91,9 @@ logs.example.com {
 # discard the Secure session cookie. Pick one of these.
 #
 # (a) Caddy's own local CA. Simplest. Browsers will warn until the root is
-#     trusted; run `caddy trust` on machines you control, or distribute
-#     Caddy's root from /var/lib/caddy/.local/share/caddy/pki/authorities/local
+#     trusted. Distribute Caddy's root certificate to machines you control;
+#     in this stack it is on the host at
+#     $CADDY_DATA_PATH/caddy/pki/authorities/local/root.crt
 #
 #     stats.int.example.com {
 #         tls internal

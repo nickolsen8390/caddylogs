@@ -1,9 +1,15 @@
 # Caddy Log Interface
 
-A self-hosted dashboard for Caddy's JSON access logs. Runs as a two-container
-Docker Compose stack next to Caddy, reads the log directory read-only, and
-keeps its own statistics so history survives log rotation and deletion.
+A self-hosted dashboard and control panel for Caddy. One Docker Compose stack
+runs Caddy itself alongside the interface: it reads Caddy's JSON access logs
+read-only and keeps its own statistics (so history survives log rotation and
+deletion), and it edits Caddy's configuration, reloading Caddy for you.
 
+- **Caddy configuration** — add, remove, enable and disable sites; change
+  domains, upstreams, IP allowlists, TLS, compression, snippets and global
+  options from forms; edit any directive at any depth in a tree editor; or edit
+  the raw Caddyfile. Every change is shown as a diff, validated by Caddy, and
+  applied with a zero-downtime reload. Past versions can be restored.
 - **Dashboard** — hits, 2xx vs non-2xx, top talkers, top URLs, bandwidth,
   latency percentiles, country map, top networks, browsers, referrers.
 - **Domains** — every host that received a request Caddy actually served, with
@@ -23,7 +29,7 @@ keeps its own statistics so history survives log rotation and deletion.
 ## 1. Requirements
 
 - Docker with the Compose plugin
-- Caddy writing access logs with `format json` (see `Caddyfile.example`)
+- Nothing else listening on ports 80/443 — the stack runs Caddy (2.8 or newer)
 - A MaxMind GeoLite2 country database for visitor-country data (free, see below)
 - Outbound HTTPS to notoolkit.com for BGP prefix / ASN data (no key required)
 
@@ -34,34 +40,45 @@ git clone <this repo> caddy-log-interface && cd caddy-log-interface
 cp .env.example .env
 ```
 
-Edit `.env`. The three settings you must change:
+Edit `.env`. The two settings you must change:
 
 ```bash
 # 32+ random bytes; sessions are signed and stored against this
 SESSION_SECRET=<paste output of: openssl rand -hex 32>
 
-# where Caddy's logs live ON THE HOST
-CADDY_LOG_HOST_PATH=/var/log/caddy
-
 # who may log in
 AUTH_USERS=nick:<a long, unique password>
 ```
 
-### Create the data directory
+### Create the directories
 
 All storage is bind-mounted — there are no named volumes. Docker manages
-ownership for named volumes but **not** for bind mounts, so the directory has
-to be writable by the UID the containers run as:
+ownership for named volumes but **not** for bind mounts, so the directories the
+interface writes to have to be owned by the UID the containers run as:
 
 ```bash
-mkdir -p ./data
-sudo chown -R "$(id -u):$(id -g)" ./data
+mkdir -p ./data ./caddy/conf ./caddy/run ./caddy/logs ./caddy/data ./caddy/config
+cp Caddyfile.example ./caddy/conf/Caddyfile       # then edit the host name
+sudo chown -R "$(id -u):$(id -g)" ./data ./caddy/conf ./caddy/run
+chmod 700 ./caddy/run
 printf 'PUID=%s\nPGID=%s\n' "$(id -u)" "$(id -g)" >> .env
 ```
 
-(Or leave `PUID`/`PGID` at their default of `1000` and `chown 1000:1000 ./data`.)
-If they disagree, the containers exit immediately with a message naming the
-exact `chown` to run — they will not start half-working.
+(Or leave `PUID`/`PGID` at their default of `1000` and `chown 1000:1000` those
+three.) If `./data` is wrong, the containers exit immediately with a message
+naming the exact `chown` to run — they will not start half-working. If
+`./caddy/conf` is wrong, the Caddy pages say the Caddyfile is read-only.
+
+| Directory | Written by | Read by |
+|---|---|---|
+| `./data` | web, ingest | web, ingest |
+| `./caddy/conf` (the Caddyfile) | web, on apply | caddy, web |
+| `./caddy/run` (admin socket) | caddy | web |
+| `./caddy/logs` | caddy | web, ingest (read-only) |
+| `./caddy/data`, `./caddy/config` (certificates) | caddy | caddy only |
+
+`./caddy/run` holds Caddy's admin socket. Its `0700` mode, owned by `PUID`, is
+what keeps other host users from reconfiguring Caddy through it.
 
 Keep `DATA_PATH` on a **local** filesystem. SQLite's WAL mode is not safe over
 NFS or CIFS.
@@ -102,7 +119,92 @@ geoip/
 The directory is mounted read-only at `/geoip`. Without it the stack still
 runs; the country map is simply empty and the Health page says so.
 
-## 3. Verify it is reading your logs
+### Moving an existing Caddy into this stack
+
+If Caddy already runs from its own compose file, point this stack at the same
+directories instead of starting fresh — certificates, the Caddyfile and logs
+all carry over. With the old layout `<dir>/Caddyfile`, `<dir>/data`,
+`<dir>/config`, `<dir>/logs`:
+
+```bash
+mkdir -p <dir>/conf <dir>/run
+mv <dir>/Caddyfile <dir>/conf/Caddyfile       # a directory mount, for atomic saves
+sudo chown -R "$(id -u):$(id -g)" <dir>/conf <dir>/run && chmod 700 <dir>/run
+sudo chmod 644 <dir>/logs/*.log               # existing logs were created 0600
+```
+
+```bash
+# .env
+CADDY_CONF_PATH=<dir>/conf
+CADDY_DATA_PATH=<dir>/data
+CADDY_STATE_PATH=<dir>/config
+CADDY_LOG_HOST_PATH=<dir>/logs
+CADDY_RUN_PATH=<dir>/run
+```
+
+Then, in the Caddyfile, add `mode 0644` inside each `output file` block (see
+`Caddyfile.example`) so files Caddy creates after a rotation stay readable, and
+remove any `admin` global option. Stop the old Caddy
+(`docker compose -f <old compose file> down`) and `docker compose up -d --build`
+here.
+
+## 3. Managing Caddy
+
+The **Caddy** section of the interface edits the Caddyfile:
+
+| Page | What it does |
+|---|---|
+| **Sites** | Every site block, with what it proxies to. Add a site (reverse proxy, static files, redirect or fixed response), switch one off and on, duplicate, delete. Each domain links to its traffic statistics. |
+| **Site editor** | Every common option as a form field, each with a **?** tooltip explaining what it does, what to enter, the default and an example: domains and listen addresses; what the site does (reverse proxy, static files, PHP, redirect or fixed response) with all their options — load balancing, active and passive health checks, upstream headers, streaming and buffering, timeouts, upstream TLS and HTTP versions; path rules (redirect, rewrite, block, respond, or proxy/serve a path elsewhere); IP allowlist, password protection (hashed for you), single sign-on via forward auth and upload limits; certificate source, TLS versions, key type, CA and DNS challenge; security-header presets and custom request/response headers; compression; logging and snippets; templates, metrics and variables. Anything without a form is listed under *Advanced* and stays editable in *All directives*, which edits every directive at any depth; *Source* edits the block as text. |
+| **Global & snippets** | The global options as documented form fields (certificates and ACME, ports and shutdown, trusted proxies, protocols and timeouts), plus a tree editor for everything else, and the snippets sites import. Renaming a snippet updates the imports that use it. |
+| **Caddyfile** | The whole file as text, with Caddy validation, a formatter and the JSON config Caddy is actually running. |
+| **History** | Every version applied from the interface, with who, when and why. Any version can be compared and restored. |
+
+**Nothing changes until you apply.** Edits on all pages build up one draft (it
+survives moving between pages and a refresh). *Review & apply* shows the diff,
+has Caddy validate it, and on apply:
+
+1. checks the file has not changed on disk since you opened it — if it has, you
+   choose between loading the new version or overwriting it;
+2. has Caddy adapt the Caddyfile (`/adapt`) — syntax and directive errors are
+   shown with a link to the offending line;
+3. refuses a config that would disable or move Caddy's admin endpoint, since
+   that would cut the interface off;
+4. loads it into Caddy (`/load`) — a graceful reload with no dropped
+   connections. If Caddy cannot start the new config it keeps running the old
+   one and reports why;
+5. only then writes the Caddyfile (atomically), so the file on disk is always
+   a config Caddy has accepted and a restart can never come up broken;
+6. records the version in history.
+
+**Disabled sites** are commented out, not deleted: every line of the block is
+prefixed with `#`, the way an editor's "comment out" does. The interface
+recognises a block commented that way (`#example.com {` — no space after the
+`#`) as a disabled site, so hand-commented sites show up as switchable too.
+Documentation-style comments (`# example.com {`) are left alone.
+
+**Formatting is preserved.** A block you have not touched is written back
+byte-for-byte; a block you edit keeps its own indentation style, so diffs show
+only what changed. *Format* on the Caddyfile page re-indents everything with
+tabs, like `caddy fmt`.
+
+**If the file is changed by hand** without a reload, the pages say Caddy is
+running something different from the file and offer *Reload Caddy from the
+file*. **If Caddy is down** — possibly because of the file — the pages say so,
+and the review screen offers *Save file without reloading*; Caddy's restart
+policy picks the fixed file up on its next attempt. The web container
+deliberately does not depend on the caddy container, so the tool you fix Caddy
+with is up even when Caddy is not.
+
+`CADDY_EDITORS` limits who may apply changes (everyone else can still view);
+`CADDY_MANAGE=false` turns the section off entirely.
+
+Limits: `import` of other *files* (as opposed to snippets) is shown and kept,
+but those files are not editable here, and relative import paths resolve inside
+the Caddy container, so use absolute ones. Environment placeholders
+(`{$VAR}`) are kept verbatim.
+
+## 4. Verify it is reading your logs
 
 Before wondering why the dashboard is empty:
 
@@ -124,7 +226,7 @@ docker compose run --rm --no-deps web node src/tools/selftest.js
 Worth running after changing `TRUSTED_PROXIES` or `IGNORE_CIDRS`, since those
 are silent when wrong.
 
-## 4. How the data is stored
+## 5. How the data is stored
 
 Everything lives in one SQLite file on the `data` volume, in three tiers:
 
@@ -189,7 +291,7 @@ The tailer tracks files by **inode**, not path. When Caddy rotates
 the inode, so the rotated file is read to its end and the new `access.log`
 starts cleanly at zero. Truncation in place is detected and restarts that file.
 
-## 5. IP enrichment
+## 6. IP enrichment
 
 | Source | Provides | Failure behaviour |
 |---|---|---|
@@ -277,7 +379,7 @@ docker compose run --rm --no-deps ingest node src/tools/probe.js
 The probe reports DNS, TCP and HTTP separately with timings, and names the
 likely cause when a stage fails. It writes nothing.
 
-## 6. Security
+## 7. Security
 
 The interface is built on the assumption it may be internet-facing.
 
@@ -299,11 +401,19 @@ The interface is built on the assumption it may be internet-facing.
 - Raw log content is rendered as React text nodes, never as HTML, so a crafted
   User-Agent or URL cannot inject markup into the dashboard.
 - API errors are generic; details go to the container log, not the browser.
+  The exception is Caddy's own validation message on the Caddy pages, which
+  is configuration detail the signed-in operator needs.
+- Caddy's admin API is on a unix socket in a `0700` directory, never on a TCP
+  port, and the interface never gets the Docker socket. Anyone who can sign in
+  (or is in `CADDY_EDITORS`) can reconfigure your reverse proxy, which is as
+  powerful as it sounds — treat those accounts accordingly.
+- Changes to Caddy's configuration are logged (`Caddy configuration applied`,
+  with the user) and kept in history with the full text of every version.
 
 Set `COOKIE_SECURE=false` only for plain-HTTP local testing — with it false over
 HTTP the session cookie is not marked `Secure`.
 
-## 7. Configuration reference
+## 8. Configuration reference
 
 Every setting is documented inline in `.env.example`. The ones you are most
 likely to change:
@@ -311,7 +421,12 @@ likely to change:
 | Variable | Default | Meaning |
 |---|---|---|
 | `APP_PORT` / `BIND_ADDRESS` | `8899` / `0.0.0.0` | where the UI is published |
-| `CADDY_LOG_HOST_PATH` | `/var/log/caddy` | host log directory (read-only mount) |
+| `CADDY_CONF_PATH` | `./caddy/conf` | directory holding the Caddyfile |
+| `CADDY_LOG_HOST_PATH` | `./caddy/logs` | Caddy's log directory (read-only to the app) |
+| `CADDY_DATA_PATH` / `CADDY_STATE_PATH` / `CADDY_RUN_PATH` | `./caddy/{data,config,run}` | Caddy's certificates, state, admin socket |
+| `CADDY_IMAGE` | `caddy:2` | Caddy image; use your own build for plugins |
+| `CADDY_EDITORS` | — (everyone) | users allowed to change Caddy's config |
+| `CADDY_MANAGE` | `true` | show the Caddy configuration pages |
 | `CADDY_LOG_GLOB` | `*.log` | which files to follow |
 | `AUTH_USERS` | — | `user:password` or `user:scrypt$…`, comma-separated |
 | `RETENTION_DAYS` | `365` | how long statistics are kept |
@@ -321,11 +436,12 @@ likely to change:
 | `STREAM_POLL_MS` | `400` | live-tail latency |
 | `INGEST_BACKFILL` | `true` | read existing logs from the start on first run |
 
-## 8. Operating
+## 9. Operating
 
 ```bash
 docker compose logs -f ingest        # what the tailer is doing
 docker compose logs -f web
+docker compose logs -f caddy         # Caddy itself: certificates, config loads
 docker compose restart ingest        # safe: checkpoints are durable
 docker compose down                  # your data directory is untouched
 ```
@@ -377,7 +493,7 @@ Confirm `./data/stats.db` is there and the Health page still shows your history,
 then reclaim the old volume with
 `docker volume rm caddy-log-interface_data`.
 
-## 9. Development
+## 10. Development
 
 ```bash
 cd app && npm install && cd ui && npm install
@@ -389,7 +505,7 @@ LOG_DIR=/path/to/logs DB_PATH=./data/stats.db APP_MODE=all \
 cd app/ui && npm run dev
 ```
 
-## 10. Known limits
+## 11. Known limits
 
 - Latency percentiles are computed from a fixed histogram, so they are accurate
   to the bucket edge, not exact. The bucket labels are shown alongside.
