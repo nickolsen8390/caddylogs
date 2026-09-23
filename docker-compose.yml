@@ -1,20 +1,32 @@
-# Caddy Log Interface — docker compose stack
+# Caddy + Caddy Log Interface — one docker compose stack
 #
-#   web     : Fastify API + built React UI (the only published port)
+#   caddy   : the web server / reverse proxy itself (host networking)
+#   web     : Fastify API + built React UI — log dashboards AND Caddy config
 #   ingest  : tails Caddy's JSON access logs, enriches, aggregates, prunes
 #
-# All storage is bind-mounted — no named volumes. Three paths, all set in .env:
+# All storage is bind-mounted — no named volumes. Paths are set in .env:
 #
-#   DATA_PATH           read-write  the SQLite database lives here
-#   CADDY_LOG_HOST_PATH read-only   your Caddy access logs
-#   MAXMIND_HOST_PATH   read-only   GeoLite2 .mmdb files
+#   DATA_PATH           the SQLite database (statistics, sessions, config history)
+#   CADDY_CONF_PATH     directory holding the Caddyfile — read by caddy,
+#                       written by web when you apply a change
+#   CADDY_LOG_HOST_PATH Caddy's access logs — written by caddy, read by the app
+#   CADDY_DATA_PATH     Caddy's certificates and keys (caddy only)
+#   CADDY_STATE_PATH    Caddy's autosaved config (caddy only)
+#   CADDY_RUN_PATH      holds Caddy's admin socket, shared with web
+#   MAXMIND_HOST_PATH   GeoLite2 .mmdb files (read-only)
 #
-# Because bind mounts keep the host's ownership, DATA_PATH must be writable by
-# the UID the containers run as (PUID/PGID below, default 1000). See README §2.
+# How changes reach Caddy: the web container talks to Caddy's admin API over a
+# unix socket in CADDY_RUN_PATH. Nothing listens on a TCP admin port, and the
+# web container never gets the Docker socket. Every change is validated by
+# Caddy, applied with a zero-downtime reload (Caddy rolls back on failure), and
+# only then written to the Caddyfile.
+#
+# Bind mounts keep the host's ownership: DATA_PATH, CADDY_CONF_PATH and
+# CADDY_RUN_PATH must be owned by PUID:PGID (default 1000). See README §2.
 
 name: caddy-log-interface
 
-x-common: &common
+x-app: &app
   build:
     context: ./app
     dockerfile: Dockerfile
@@ -23,10 +35,6 @@ x-common: &common
   env_file: .env
   # Bind mounts carry host ownership, so run as whoever owns DATA_PATH.
   user: "${PUID:-1000}:${PGID:-1000}"
-  volumes:
-    - ${DATA_PATH:-./data}:/data
-    - ${CADDY_LOG_HOST_PATH:-/var/log/caddy}:/logs:ro
-    - ${MAXMIND_HOST_PATH:-./geoip}:/geoip:ro
   # Optional /etc/hosts entries inside the containers, for names the container
   # cannot otherwise reach (NAT hairpin when this stack monitors the same
   # server that serves the name). Set EXTRA_HOST in .env, e.g.
@@ -53,17 +61,60 @@ x-common: &common
       max-file: "3"
 
 services:
+  caddy:
+    # Use a custom build here if you need plugins (e.g. a DNS provider for the
+    # DNS-01 challenge): CADDY_IMAGE=my-caddy:latest
+    image: ${CADDY_IMAGE:-caddy:2}
+    container_name: caddy
+    restart: unless-stopped
+    # Host networking: Caddy binds 80/443 (and 443/udp for HTTP/3) directly on
+    # the host and sees real client addresses. Published ports do not apply in
+    # this mode, so there is no `ports:` section.
+    network_mode: host
+    cap_add:
+      - NET_ADMIN # lets quic-go raise UDP buffer sizes for HTTP/3
+    environment:
+      # The admin API lives on a unix socket instead of TCP localhost:2019.
+      # `|0222` lets the web container (a non-root user) connect to it; the
+      # socket's directory (CADDY_RUN_PATH, mode 0700) is what keeps everyone
+      # else out. Do not also set `admin` in the Caddyfile's global options —
+      # the interface refuses changes that would move or disable it.
+      CADDY_ADMIN: "unix//run/caddy/admin.sock|0222"
+      TZ: ${TZ:-UTC}
+    volumes:
+      # A directory, not the single file, so saves can be atomic renames.
+      - ${CADDY_CONF_PATH:-./caddy/conf}:/etc/caddy:ro
+      - ${CADDY_DATA_PATH:-./caddy/data}:/data
+      - ${CADDY_STATE_PATH:-./caddy/config}:/config
+      - ${CADDY_LOG_HOST_PATH:-./caddy/logs}:/var/log/caddy
+      - ${CADDY_RUN_PATH:-./caddy/run}:/run/caddy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   web:
-    <<: *common
+    <<: *app
     container_name: cli-web
     environment:
       TZ: ${TZ:-UTC}
       DB_PATH: /data/stats.db
       LOG_DIR: /logs
       APP_MODE: web
+      CADDYFILE_PATH: /caddy/Caddyfile
+      CADDY_ADMIN_ADDRESS: unix//run/caddy/admin.sock
     command: ["node", "src/index.js"]
+    volumes:
+      - ${DATA_PATH:-./data}:/data
+      - ${CADDY_LOG_HOST_PATH:-./caddy/logs}:/logs:ro
+      - ${MAXMIND_HOST_PATH:-./geoip}:/geoip:ro
+      - ${CADDY_CONF_PATH:-./caddy/conf}:/caddy
+      - ${CADDY_RUN_PATH:-./caddy/run}:/run/caddy
     ports:
       - "${BIND_ADDRESS:-0.0.0.0}:${APP_PORT:-8899}:8899"
+    # Deliberately NOT depending on caddy: if a bad config ever keeps Caddy
+    # from starting, this is the tool you fix it with.
     depends_on:
       ingest:
         condition: service_started
@@ -75,7 +126,7 @@ services:
       start_period: 20s
 
   ingest:
-    <<: *common
+    <<: *app
     container_name: cli-ingest
     environment:
       TZ: ${TZ:-UTC}
@@ -83,3 +134,7 @@ services:
       LOG_DIR: /logs
       APP_MODE: ingest
     command: ["node", "src/index.js"]
+    volumes:
+      - ${DATA_PATH:-./data}:/data
+      - ${CADDY_LOG_HOST_PATH:-./caddy/logs}:/logs:ro
+      - ${MAXMIND_HOST_PATH:-./geoip}:/geoip:ro

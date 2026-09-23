@@ -11,6 +11,12 @@ import LogStream from './pages/LogStream.jsx';
 import Requests from './pages/Requests.jsx';
 import IpDetail from './pages/IpDetail.jsx';
 import Health from './pages/Health.jsx';
+import CaddyLayout from './pages/caddy/CaddyLayout.jsx';
+import CaddySites from './pages/caddy/Sites.jsx';
+import CaddySiteEditor from './pages/caddy/SiteEditor.jsx';
+import CaddyGlobal from './pages/caddy/GlobalOptions.jsx';
+import CaddyRaw from './pages/caddy/RawEditor.jsx';
+import CaddyHistory from './pages/caddy/History.jsx';
 
 const TITLES = [
   [/^\/$/, 'Dashboard'],
@@ -20,6 +26,11 @@ const TITLES = [
   [/^\/ip\//, 'Source address'],
   [/^\/logs/, 'Live logs'],
   [/^\/health/, 'System health'],
+  [/^\/caddy\/sites\//, 'Caddy · edit site'],
+  [/^\/caddy\/global/, 'Caddy · global options & snippets'],
+  [/^\/caddy\/raw/, 'Caddy · Caddyfile'],
+  [/^\/caddy\/history/, 'Caddy · history'],
+  [/^\/caddy/, 'Caddy · sites'],
 ];
 
 export default function App() {
@@ -111,6 +122,10 @@ export default function App() {
           <NavLink to="/logs">
             <Icon name="stream" /> Log stream
           </NavLink>
+          <div className="nav-label">Configure</div>
+          <NavLink to="/caddy">
+            <Icon name="caddy" /> Caddy
+          </NavLink>
           <div className="nav-label">System</div>
           <NavLink to="/health">
             <Icon name="health" /> Health
@@ -151,6 +166,13 @@ export default function App() {
             <Route path="/ip/:ip" element={<IpDetail ctx={ctx} />} />
             <Route path="/logs" element={<LogStream ctx={ctx} />} />
             <Route path="/health" element={<Health ctx={ctx} />} />
+            <Route path="/caddy" element={<CaddyLayout ctx={ctx} />}>
+              <Route index element={<CaddySites />} />
+              <Route path="sites/:idx" element={<CaddySiteEditor />} />
+              <Route path="global" element={<CaddyGlobal />} />
+              <Route path="raw" element={<CaddyRaw />} />
+              <Route path="history" element={<CaddyHistory />} />
+            </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </div>

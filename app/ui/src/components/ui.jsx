@@ -197,6 +197,7 @@ export function Icon({ name }) {
     requests: 'M10 4h11M10 12h11M10 20h11M4 4h.01M4 12h.01M4 20h.01',
     stream: 'M4 6h16M4 12h10M4 18h13',
     health: 'M3 12h4l2 6 4-14 2 8h6',
+    caddy: 'M4 7h10M18 7h2M4 17h2M10 17h10M16 4v6M8 14v6',
   };
   return (
     <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"

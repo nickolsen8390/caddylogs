@@ -55,6 +55,9 @@ export default function DomainDetail({ ctx }) {
         <div className="hstack">
           <Link to="/domains" className="btn sm">← Domains</Link>
           <h2 style={{ margin: 0, fontSize: 16, fontWeight: 640 }}>{host}</h2>
+          <Link to={`/caddy?q=${encodeURIComponent(host)}`} className="btn sm" title="Find this domain in the Caddy configuration">
+            Configure
+          </Link>
           {loading && <span className="spinner" />}
         </div>
         <TimeRange value={range} onChange={setRange} retentionDays={meta.data?.retention?.days} />
