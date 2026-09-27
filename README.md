@@ -47,7 +47,7 @@ Edit `.env`. The two settings you must change:
 SESSION_SECRET=<paste output of: openssl rand -hex 32>
 
 # who may log in
-AUTH_USERS=nick:<a long, unique password>
+AUTH_USERS=admin:<a long, unique password>
 ```
 
 ### Create the directories
@@ -196,8 +196,12 @@ policy picks the fixed file up on its next attempt. The web container
 deliberately does not depend on the caddy container, so the tool you fix Caddy
 with is up even when Caddy is not.
 
-`CADDY_EDITORS` limits who may apply changes (everyone else can still view);
-`CADDY_MANAGE=false` turns the section off entirely.
+`CADDY_EDITORS` limits who may apply changes (everyone else can still view).
+`CADDY_MANAGE=false` switches configuration management off: the Caddy menu
+and pages disappear from the interface, and the configuration API refuses
+every request. Caddy itself keeps running from its Caddyfile. It defaults to
+`true`; restart the web container after changing it
+(`docker compose up -d web`).
 
 Limits: `import` of other *files* (as opposed to snippets) is shown and kept,
 but those files are not editable here, and relative import paths resolve inside
@@ -426,7 +430,7 @@ likely to change:
 | `CADDY_DATA_PATH` / `CADDY_STATE_PATH` / `CADDY_RUN_PATH` | `./caddy/{data,config,run}` | Caddy's certificates, state, admin socket |
 | `CADDY_IMAGE` | `caddy:2` | Caddy image; use your own build for plugins |
 | `CADDY_EDITORS` | — (everyone) | users allowed to change Caddy's config |
-| `CADDY_MANAGE` | `true` | show the Caddy configuration pages |
+| `CADDY_MANAGE` | `true` | `false` hides the Caddy menu and turns the configuration API off |
 | `CADDY_LOG_GLOB` | `*.log` | which files to follow |
 | `AUTH_USERS` | — | `user:password` or `user:scrypt$…`, comma-separated |
 | `RETENTION_DAYS` | `365` | how long statistics are kept |

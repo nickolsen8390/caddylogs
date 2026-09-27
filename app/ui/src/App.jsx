@@ -33,8 +33,13 @@ const TITLES = [
   [/^\/caddy/, 'Caddy · sites'],
 ];
 
+/** Optional parts of the interface; the server says which are switched on. */
+const DEFAULT_FEATURES = { caddy: true };
+
 export default function App() {
-  const [auth, setAuth] = useState({ state: 'checking', username: null });
+  const [auth, setAuth] = useState({ state: 'checking', username: null, features: DEFAULT_FEATURES });
+  // Slide-in navigation on narrow screens; ignored where the sidebar is fixed.
+  const [navOpen, setNavOpen] = useState(false);
   const [theme, setTheme] = useLocalState('cli.theme', 'dark');
   const [range, setRange] = useLocalState('cli.range', '24h');
   const location = useLocation();
@@ -48,12 +53,12 @@ export default function App() {
       const me = await api.get('/api/auth/me');
       if (me?.authenticated) {
         setCsrf(me.csrf);
-        setAuth({ state: 'in', username: me.username });
+        setAuth({ state: 'in', username: me.username, features: { ...DEFAULT_FEATURES, ...me.features } });
       } else {
-        setAuth({ state: 'out', username: null });
+        setAuth((a) => ({ ...a, state: 'out', username: null }));
       }
     } catch {
-      setAuth({ state: 'out', username: null });
+      setAuth((a) => ({ ...a, state: 'out', username: null }));
     }
   }, []);
 
@@ -63,8 +68,25 @@ export default function App() {
 
   const onUnauthorized = useCallback(() => {
     setCsrf(null);
-    setAuth({ state: 'out', username: null });
+    setAuth((a) => ({ ...a, state: 'out', username: null }));
   }, []);
+
+  // Close the drawer whenever the page changes, and on Escape.
+  useEffect(() => {
+    setNavOpen(false);
+  }, [location.pathname, location.search]);
+  useEffect(() => {
+    if (!navOpen) return undefined;
+    const onKey = (e) => {
+      if (e.key === 'Escape') setNavOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    document.body.classList.add('nav-locked');
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.classList.remove('nav-locked');
+    };
+  }, [navOpen]);
 
   async function logout() {
     try {
@@ -92,20 +114,24 @@ export default function App() {
       <Login
         onSuccess={(res) => {
           setCsrf(res.csrf);
-          setAuth({ state: 'in', username: res.username });
+          setAuth({ state: 'in', username: res.username, features: { ...DEFAULT_FEATURES, ...res.features } });
         }}
       />
     );
   }
 
-  const ctx = { range, setRange, onUnauthorized };
+  const { features } = auth;
+  const ctx = { range, setRange, onUnauthorized, features };
 
   return (
-    <div className="shell">
-      <aside className="sidebar">
+    <div className={`shell${navOpen ? ' nav-open' : ''}`}>
+      <aside className="sidebar" id="sidebar" aria-label="Main navigation">
         <div className="brand">
           <span className="brand-mark">C</span>
           <span>Caddy Logs</span>
+          <button type="button" className="nav-close" aria-label="Close menu" onClick={() => setNavOpen(false)}>
+            ✕
+          </button>
         </div>
         <nav className="nav">
           <div className="nav-label">Overview</div>
@@ -122,10 +148,14 @@ export default function App() {
           <NavLink to="/logs">
             <Icon name="stream" /> Log stream
           </NavLink>
-          <div className="nav-label">Configure</div>
-          <NavLink to="/caddy">
-            <Icon name="caddy" /> Caddy
-          </NavLink>
+          {features.caddy && (
+            <>
+              <div className="nav-label">Configure</div>
+              <NavLink to="/caddy">
+                <Icon name="caddy" /> Caddy
+              </NavLink>
+            </>
+          )}
           <div className="nav-label">System</div>
           <NavLink to="/health">
             <Icon name="health" /> Health
@@ -152,8 +182,22 @@ export default function App() {
         </div>
       </aside>
 
+      <div className="nav-backdrop" aria-hidden="true" onClick={() => setNavOpen(false)} />
+
       <div className="main">
         <header className="topbar">
+          <button
+            type="button"
+            className="nav-toggle"
+            aria-label="Open menu"
+            aria-controls="sidebar"
+            aria-expanded={navOpen}
+            onClick={() => setNavOpen(true)}
+          >
+            <span />
+            <span />
+            <span />
+          </button>
           <h1>{title}</h1>
           <span className="spacer" />
         </header>
@@ -166,13 +210,15 @@ export default function App() {
             <Route path="/ip/:ip" element={<IpDetail ctx={ctx} />} />
             <Route path="/logs" element={<LogStream ctx={ctx} />} />
             <Route path="/health" element={<Health ctx={ctx} />} />
-            <Route path="/caddy" element={<CaddyLayout ctx={ctx} />}>
-              <Route index element={<CaddySites />} />
-              <Route path="sites/:idx" element={<CaddySiteEditor />} />
-              <Route path="global" element={<CaddyGlobal />} />
-              <Route path="raw" element={<CaddyRaw />} />
-              <Route path="history" element={<CaddyHistory />} />
-            </Route>
+            {features.caddy && (
+              <Route path="/caddy" element={<CaddyLayout ctx={ctx} />}>
+                <Route index element={<CaddySites />} />
+                <Route path="sites/:idx" element={<CaddySiteEditor />} />
+                <Route path="global" element={<CaddyGlobal />} />
+                <Route path="raw" element={<CaddyRaw />} />
+                <Route path="history" element={<CaddyHistory />} />
+              </Route>
+            )}
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </div>

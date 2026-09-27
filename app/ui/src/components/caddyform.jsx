@@ -18,9 +18,13 @@ export function Help({ text, example, placeholder, dir }) {
   const ref = useRef(null);
   const [open, setOpen] = useState(false);
   const [side, setSide] = useState('right');
+  // A tap fires a synthetic hover (which opens) right before its click; the
+  // click must not then toggle it shut again.
+  const openedAt = useRef(0);
   const show = () => {
     const r = ref.current?.getBoundingClientRect();
     setSide(r && r.left > window.innerWidth - 340 ? 'left' : 'right');
+    if (!open) openedAt.current = Date.now();
     setOpen(true);
   };
   useEffect(() => {
@@ -46,7 +50,8 @@ export function Help({ text, example, placeholder, dir }) {
         onBlur={() => setOpen(false)}
         onClick={(e) => {
           e.preventDefault();
-          open ? setOpen(false) : show();
+          if (open && Date.now() - openedAt.current > 500) setOpen(false);
+          else show();
         }}
       >
         ?

@@ -69,7 +69,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 /* ---------------------------------------------------------------- layout */
 
-.shell { display: grid; grid-template-columns: 216px 1fr; height: 100vh; }
+/* dvh, where supported, excludes a mobile browser's toolbars; plain vh is
+   the fallback and would put the bottom of the page behind them. */
+.shell { display: grid; grid-template-columns: 216px 1fr; height: 100vh; height: 100dvh; }
 
 .sidebar {
   background: var(--bg-soft);
@@ -153,7 +155,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 @media (max-width: 780px) {
   .shell { grid-template-columns: 1fr; }
-  .sidebar { display: none; }
+  /* The sidebar becomes a slide-in drawer; see "phones" at the end. */
   .grid.cols-2, .grid.cols-3, .grid.cols-4 { grid-template-columns: 1fr; }
 }
 
@@ -674,4 +676,166 @@ code {
   .hdr-row { grid-template-columns: 1fr 1fr; }
   .modal-backdrop { padding: 8px; }
   .diff-line { grid-template-columns: 30px 30px 14px minmax(0, 1fr); }
+}
+
+/* ================================================================ layout pieces
+   that only matter on small screens. Desktop defaults first. */
+
+.nav-toggle, .nav-close, .nav-backdrop, .mobile-only { display: none; }
+body.nav-locked { overflow: hidden; }
+
+/* Live log toolbar: on desktop the three groups dissolve into one wrapping
+   row, exactly as before; phones stack them. */
+.stream-panel { display: flex; flex-direction: column; height: calc(100vh - 132px); height: calc(100dvh - 132px); }
+.stream-controls, .stream-filters, .stream-stats, .stream-filter-actions { display: contents; }
+.stream-state { font-weight: 620; min-width: 92px; }
+.stream-filters .f-host { width: 150px; }
+.stream-filters .f-ip { width: 120px; }
+.stream-filters .f-status { width: 78px; }
+.stream-filters .f-method { width: 118px; }
+.stream-filters .f-bots { width: 136px; }
+.stream-filters .f-q { width: 180px; }
+.stream-stats > :first-child { margin-left: auto; }
+
+.seg { max-width: 100%; overflow-x: auto; }
+
+/* Touch screens have no hover: show controls that otherwise appear on it. */
+@media (hover: none) {
+  .dactions { opacity: 1; }
+}
+
+/* ================================================================ phones */
+
+@media (max-width: 780px) {
+  /* --- navigation drawer --- */
+  .sidebar {
+    position: fixed; inset: 0 auto 0 0; z-index: 70;
+    width: min(280px, 85vw); height: 100%;
+    overflow-y: auto; box-shadow: var(--shadow);
+    transform: translateX(-100%); visibility: hidden;
+    transition: transform 0.2s ease, visibility 0.2s;
+  }
+  .shell.nav-open .sidebar { transform: none; visibility: visible; }
+  .nav-backdrop {
+    display: block; position: fixed; inset: 0; z-index: 65;
+    background: rgba(0, 0, 0, 0.5);
+    opacity: 0; pointer-events: none; transition: opacity 0.2s;
+  }
+  .shell.nav-open .nav-backdrop { opacity: 1; pointer-events: auto; }
+  .nav a { padding: 10px 10px; }
+  .nav-close {
+    display: inline-grid; place-items: center; margin-left: auto;
+    width: 32px; height: 32px; border-radius: 8px; cursor: pointer;
+    background: none; border: 1px solid var(--border); color: var(--text-dim);
+  }
+  .nav-toggle {
+    display: inline-flex; flex-direction: column; justify-content: center; align-items: center; gap: 4px;
+    width: 38px; height: 38px; flex: none; margin-left: -6px; cursor: pointer;
+    background: none; border: 1px solid var(--border); border-radius: 8px;
+  }
+  .nav-toggle span { display: block; width: 16px; height: 2px; border-radius: 1px; background: var(--text); }
+
+  .topbar { padding: 8px 12px; min-height: 52px; gap: 10px; }
+  .topbar h1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .content { padding: 12px 12px 32px; }
+  .mobile-only { display: inline-flex; }
+
+  /* --- general density --- */
+  .panel-head { flex-wrap: wrap; row-gap: 6px; }
+  .panel-body { padding: 12px; }
+  .panel-body.flush { overflow-x: auto; }       /* wide tables scroll sideways */
+  table.data th, table.data td { padding: 7px 9px; }
+  .grid { gap: 10px; }
+  .grid.stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stat-value { font-size: 20px; }
+  .banner { padding: 9px 11px; }
+
+  /* iOS zooms into any focused field with text under 16px. */
+  .input, select.input, textarea, .tok, .code-editor { font-size: 16px; }
+
+  /* Help opens as a sheet along the bottom: a popover next to the ? would run
+     off the side of a narrow screen. */
+  .help-pop, .help-pop.left, .help-pop.right {
+    position: fixed; left: 12px; right: 12px; top: auto; bottom: 12px;
+    width: auto; max-width: none; z-index: 80;
+  }
+  .toast { left: 12px; right: 12px; bottom: 12px; max-width: none; }
+  .modal { max-height: calc(100dvh - 16px); }
+  .unsaved-bar { top: -12px; }
+
+  /* --- request rows: two lines, the URL on its own and allowed to wrap ---
+     Line 1: time, status, method, source (right), duration.
+     Line 2: host + path + query, up to three lines; the whole thing once the
+     row is opened. */
+  .log-row {
+    grid-template-columns: auto auto auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "time status method ip dur"
+      "url  url    url    url url";
+    gap: 2px 8px; padding: 7px 12px; line-height: 1.45;
+  }
+  .log-row .col-time { grid-area: time; }
+  .log-row .col-status { grid-area: status; }
+  .log-row .col-method { grid-area: method; }
+  .log-row .col-ip { grid-area: ip; text-align: right; }
+  .log-row .col-dur { grid-area: dur; }
+  .log-row .col-size { display: none; }
+  .log-row .col-url.truncate {
+    grid-area: url;
+    white-space: normal; overflow-wrap: anywhere; word-break: break-all;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3;
+    overflow: hidden;
+  }
+  .log-row.open .col-url.truncate { display: block; -webkit-line-clamp: unset; line-clamp: none; }
+  .log-json { font-size: 11px; padding: 10px 12px; }
+
+  /* --- live log toolbar --- */
+  .stream-panel { height: calc(100vh - 80px); height: calc(100dvh - 80px); }
+  .stream-bar { flex-direction: column; align-items: stretch; gap: 8px; }
+  .stream-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .stream-state { min-width: 0; }
+  .stream-filters { display: none; }
+  .stream-filters.open { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .stream-filters .input { width: 100%; }
+  .stream-filters .f-q { grid-column: 1 / -1; }
+  .stream-filter-actions { display: flex; gap: 6px; grid-column: 1 / -1; }
+  .stream-stats { display: flex; flex-wrap: wrap; gap: 6px; }
+  .stream-stats > :first-child { margin-left: 0; }
+
+  /* --- request explorer filters --- */
+  .filter-bar { padding: 12px; }
+  .filter-search { flex-wrap: wrap; }
+  .filter-search .input { flex: 1 1 100%; }
+  .filter-fields { grid-template-columns: 1fr 1fr; }
+  .filter-fields:not(.open) { display: none; }
+
+  /* --- Caddy pages --- */
+  .caddy-head { align-items: stretch; flex-direction: column-reverse; gap: 8px; }
+  .caddy-head .chip { align-self: flex-start; margin-bottom: 0; }
+  .sec-nav { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; }
+  .sec-nav > .btn { flex: none; }
+  .sec-nav > span.faint { display: none; }
+  .f-grid { grid-template-columns: 1fr; }
+  .mode-cards { grid-template-columns: 1fr; }
+  .rule-row > select.input { flex: 1 1 100%; }
+
+  /* The sites table becomes one card per site. */
+  .sites-table thead { display: none; }
+  .sites-table tbody tr {
+    display: grid; grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas: "sw addr" "sw desc" "act act";
+    gap: 4px 12px; padding: 10px 12px; border-bottom: 1px solid var(--border-soft);
+  }
+  .sites-table tbody tr:last-child { border-bottom: none; }
+  table.data.sites-table td { display: block; padding: 0; border: none; }
+  .sites-table td:nth-child(1) { grid-area: sw; }
+  .sites-table td:nth-child(2) { grid-area: addr; }
+  .sites-table td:nth-child(3) { grid-area: desc; }
+  .sites-table td:nth-child(4) { grid-area: act; }
+  .sites-table td:nth-child(4) .hstack { justify-content: flex-start !important; }
+  .sites-table .mono { word-break: break-all; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar, .nav-backdrop { transition: none; }
 }

@@ -55,6 +55,9 @@ export default function Requests({ ctx }) {
   // drill-down link, removing a chip or pressing back all update the fields.
   const [draft, setDraft] = useState(() => ({ ...EMPTY_DRAFT, ...pick(active, BAR_KEYS) }));
   const [search, setSearch] = useState(active.q ?? '');
+  // Phones only: the field filters fold away behind a button.
+  const [fieldsOpen, setFieldsOpen] = useState(false);
+  const barFilters = BAR_KEYS.filter((k) => active[k]).length;
   useEffect(() => {
     setDraft({ ...EMPTY_DRAFT, ...pick(active, BAR_KEYS) });
     setSearch(active.q ?? '');
@@ -130,6 +133,7 @@ export default function Requests({ ctx }) {
     const fields = {};
     for (const k of BAR_KEYS) fields[k] = normalizeFilterValue(k, draft[k]);
     setParams(withoutEmpty({ ...carried, ...fields, ...structured, q }));
+    setFieldsOpen(false);
   }
 
   function removeFilter(key) {
@@ -155,14 +159,23 @@ export default function Requests({ ctx }) {
           <input
             className="input"
             aria-label="Search requests"
-            placeholder='Search anything, or use terms:  host:example.com  ua:curl  status:4xx  url:/wp-login  ip:1.2.3.4'
+            placeholder='Search, or terms like  host:example.com  ua:curl  status:4xx  url:/wp-login  ip:1.2.3.4'
+            title="Free text, or key:value terms — host: ua: status: url: ip: country: asn: ref: bot:"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
           <button className="btn sm primary" type="submit">Search</button>
           <button className="btn sm" type="button" onClick={() => setParams({})}>Reset</button>
         </div>
-        <div className="filter-fields">
+        <button
+          type="button"
+          className="btn sm mobile-only"
+          aria-expanded={fieldsOpen}
+          onClick={() => setFieldsOpen(!fieldsOpen)}
+        >
+          {fieldsOpen ? 'Hide filters ▴' : `More filters${barFilters ? ` (${barFilters} set)` : ''} ▾`}
+        </button>
+        <div className={`filter-fields${fieldsOpen ? ' open' : ''}`}>
           <label>
             Domain
             <select className="input" {...field('host')}>

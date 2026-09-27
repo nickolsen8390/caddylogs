@@ -194,18 +194,20 @@ export function RequestRow({ row, expanded, onToggle, context }) {
         onClick={() => onToggle(row.id)}
         title="Click to expand the original log entry"
       >
-        <span className="faint">{clock(row.ts)}</span>
-        <span className={statusClass(row.status)} style={{ fontWeight: 650 }}>
+        <span className="faint col-time">{clock(row.ts)}</span>
+        <span className={`col-status ${statusClass(row.status)}`} style={{ fontWeight: 650 }}>
           {row.status || '—'}
         </span>
-        <span className="dim">{row.method}</span>
-        <span className="truncate" title={`${row.host}${row.path}`}>
+        <span className="dim col-method">{row.method}</span>
+        {/* One line and truncated on wide screens; its own wrapping line on
+            phones, where there is no room to share a row with the URL. */}
+        <span className="truncate col-url" title={`${row.host}${row.path}${row.query ? `?${row.query}` : ''}`}>
           <span className="dim">{row.host}</span>
           {row.path}
           {row.query ? <span className="faint">?{row.query}</span> : null}
         </span>
         <span className="faint col-size" style={{ textAlign: 'right' }}>{bytes(row.bytes_out)}</span>
-        <span className="faint" style={{ textAlign: 'right' }}>{ms(row.dur_ms)}</span>
+        <span className="faint col-dur" style={{ textAlign: 'right' }}>{ms(row.dur_ms)}</span>
         <span
           className="truncate col-ip"
           title={`${row.ip ?? ''}${row.as_org ? ` · ${row.as_org}` : ''}`}

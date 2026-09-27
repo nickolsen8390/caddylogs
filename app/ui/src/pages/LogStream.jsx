@@ -26,6 +26,9 @@ export default function LogStream() {
   const [rate, setRate] = useState(0);
   const [skipped, setSkipped] = useState(0);
   const [seedError, setSeedError] = useState(null);
+  // Phones only: the filter inputs fold away so the log keeps the screen.
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const activeFilters = Object.values(applied).filter(Boolean).length;
 
   // While paused, arriving events collect here instead of re-rendering the
   // list, so the rows under the cursor never move.
@@ -133,9 +136,10 @@ export default function LogStream() {
     setPaused(false);
   }
 
-    function applyFilters(e) {
+  function applyFilters(e) {
     e?.preventDefault();
     setApplied(filters);
+    setFiltersOpen(false);
     const next = {};
     for (const [k, v] of Object.entries(filters)) if (v) next[k] = v;
     setParams(next, { replace: true });
@@ -152,65 +156,74 @@ export default function LogStream() {
     state === 'live' && !paused ? 'pulsing' : paused ? 'paused' : state === 'live' ? '' : 'down';
 
   return (
-    <div
-      className="panel"
-      style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 132px)' }}
-    >
+    <div className="panel stream-panel">
       <form className="stream-bar" onSubmit={applyFilters}>
-        <span className={`live-dot ${dot}`} />
-        <span style={{ fontWeight: 620, minWidth: 92 }}>
-          {paused ? 'Paused' : state === 'live' ? 'Live' : state === 'connecting' ? 'Connecting…' : 'Reconnecting…'}
-        </span>
+        <div className="stream-controls">
+          <span className={`live-dot ${dot}`} />
+          <span className="stream-state">
+            {paused ? 'Paused' : state === 'live' ? 'Live' : state === 'connecting' ? 'Connecting…' : 'Reconnecting…'}
+          </span>
 
-        <button type="button" className="btn sm" onClick={() => (paused ? resume() : setPaused(true))}>
-          {paused ? `▶ Resume${pendingCount ? ` (${num(pendingCount)})` : ''}` : '⏸ Pause'}
-        </button>
-        <button type="button" className="btn sm" onClick={() => setRows([])}>
-          Clear
-        </button>
-        <label className="hstack" style={{ gap: 5, fontSize: 12 }}>
-          <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
-          Follow
-        </label>
+          <button type="button" className="btn sm" onClick={() => (paused ? resume() : setPaused(true))}>
+            {paused ? `▶ Resume${pendingCount ? ` (${num(pendingCount)})` : ''}` : '⏸ Pause'}
+          </button>
+          <button type="button" className="btn sm" onClick={() => setRows([])}>
+            Clear
+          </button>
+          <label className="hstack" style={{ gap: 5, fontSize: 12 }}>
+            <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
+            Follow
+          </label>
+          <button
+            type="button"
+            className={`btn sm mobile-only${activeFilters ? ' primary' : ''}`}
+            aria-expanded={filtersOpen}
+            onClick={() => setFiltersOpen(!filtersOpen)}
+          >
+            Filters{activeFilters ? ` (${activeFilters})` : ''} {filtersOpen ? '▴' : '▾'}
+          </button>
+        </div>
 
-        <span style={{ width: 1, height: 20, background: 'var(--border)' }} />
+        <div className={`stream-filters${filtersOpen ? ' open' : ''}`}>
+          <input className="input f-host" placeholder="host"
+                 value={filters.host} onChange={(e) => setFilters({ ...filters, host: e.target.value })} />
+          <input className="input f-ip" placeholder="source IP"
+                 value={filters.ip} onChange={(e) => setFilters({ ...filters, ip: e.target.value })} />
+          <input className="input f-status" placeholder="status"
+                 value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}
+                 title="Exact code (404) or class (4xx)" />
+          <select className="input f-method" value={filters.method}
+                  onChange={(e) => setFilters({ ...filters, method: e.target.value })}>
+            <option value="">Any method</option>
+            {['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].map((m) => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+          <select className="input f-bots" value={filters.bots}
+                  onChange={(e) => setFilters({ ...filters, bots: e.target.value })}>
+            <option value="">Bots &amp; humans</option>
+            <option value="exclude">Humans only</option>
+            <option value="only">Bots only</option>
+          </select>
+          <input className="input f-q" placeholder="search path / UA / referrer"
+                 value={filters.q} onChange={(e) => setFilters({ ...filters, q: e.target.value })} />
+          <span className="stream-filter-actions">
+            <button className="btn primary sm" type="submit">Apply</button>
+            <button className="btn sm" type="button" onClick={clearAll}>Reset</button>
+          </span>
+        </div>
 
-        <input className="input" style={{ width: 150 }} placeholder="host"
-               value={filters.host} onChange={(e) => setFilters({ ...filters, host: e.target.value })} />
-        <input className="input" style={{ width: 120 }} placeholder="source IP"
-               value={filters.ip} onChange={(e) => setFilters({ ...filters, ip: e.target.value })} />
-        <input className="input" style={{ width: 78 }} placeholder="status"
-               value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}
-               title="Exact code (404) or class (4xx)" />
-        <select className="input" style={{ width: 92 }} value={filters.method}
-                onChange={(e) => setFilters({ ...filters, method: e.target.value })}>
-          <option value="">Any method</option>
-          {['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].map((m) => (
-            <option key={m} value={m}>{m}</option>
-          ))}
-        </select>
-        <select className="input" style={{ width: 108 }} value={filters.bots}
-                onChange={(e) => setFilters({ ...filters, bots: e.target.value })}>
-          <option value="">Bots &amp; humans</option>
-          <option value="exclude">Humans only</option>
-          <option value="only">Bots only</option>
-        </select>
-        <input className="input" style={{ width: 180 }} placeholder="search path / UA / referrer"
-               value={filters.q} onChange={(e) => setFilters({ ...filters, q: e.target.value })} />
-
-        <button className="btn primary sm" type="submit">Apply</button>
-        <button className="btn sm" type="button" onClick={clearAll}>Reset</button>
-
-        <span className="spacer" style={{ flex: 1 }} />
-        <Chip title="Requests per second across the whole server, averaged over 10s">
-          {rate.toFixed(rate < 10 ? 1 : 0)}/s
-        </Chip>
-        {skipped > 0 && (
-          <Chip tone="warn" title="The server logged requests faster than the live tail can carry. Aggregate statistics are still complete.">
-            {num(skipped)} not shown
+        <div className="stream-stats">
+          <Chip title="Requests per second across the whole server, averaged over 10s">
+            {rate.toFixed(rate < 10 ? 1 : 0)}/s
           </Chip>
-        )}
-        <Chip>{num(rows.length)} shown</Chip>
+          {skipped > 0 && (
+            <Chip tone="warn" title="The server logged requests faster than the live tail can carry. Aggregate statistics are still complete.">
+              {num(skipped)} not shown
+            </Chip>
+          )}
+          <Chip>{num(rows.length)} shown</Chip>
+        </div>
       </form>
 
       {seedError && (

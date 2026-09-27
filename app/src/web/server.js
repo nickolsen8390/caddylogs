@@ -20,6 +20,9 @@ import { initMaxmind } from '../enrich/maxmind.js';
 
 const log = logger('web');
 
+/** Optional parts of the interface, so the UI can leave out what is switched off. */
+const features = () => ({ caddy: config.caddy.enabled });
+
 /** Operator-facing next step for each way the secure-context check can fail. */
 const INSECURE_HINTS = {
   forwarded_proto_not_https:
@@ -195,7 +198,7 @@ export async function buildServer() {
       const { token, csrf } = createSession(username, ip, req.headers['user-agent']);
       reply.setCookie(COOKIE_NAME, token, cookieOptions());
       log.info('login', { ip, username });
-      return { username, csrf };
+      return { username, csrf, features: features() };
     }
   );
 
@@ -207,7 +210,7 @@ export async function buildServer() {
 
   app.get('/api/auth/me', async (req) => {
     if (!req.session) return { authenticated: false };
-    return { authenticated: true, username: req.session.username, csrf: req.session.csrf };
+    return { authenticated: true, username: req.session.username, csrf: req.session.csrf, features: features() };
   });
 
   // -------------------------------------------------------------------------
