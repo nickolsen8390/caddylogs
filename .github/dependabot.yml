@@ -1,5 +1,10 @@
-# Weekly pull requests for outdated dependencies. Each ecosystem's updates
-# arrive grouped in one PR, and the image workflow builds every PR as a check.
+# Weekly pull requests for outdated dependencies, grouped per ecosystem. The
+# image workflow builds every PR as a check.
+#
+# Only minor and patch updates are proposed automatically. Major versions
+# (React, Vite, better-sqlite3, the Node.js base image…) usually need code
+# changes and testing, so they are upgraded deliberately, not by a bot PR.
+# Security updates are separate and still arrive for any version.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -8,7 +13,10 @@ updates:
       interval: weekly
     groups:
       server:
-        patterns: ['*']
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
 
   - package-ecosystem: npm
     directory: /app/ui
@@ -16,13 +24,20 @@ updates:
       interval: weekly
     groups:
       ui:
-        patterns: ['*']
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
 
-  # The Node.js base image in app/Dockerfile.
+  # The Node.js base image in app/Dockerfile. Stays on its major version (an
+  # LTS line); moving to the next LTS is done by hand.
   - package-ecosystem: docker
     directory: /app
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: node
+        update-types: ['version-update:semver-major']
 
   - package-ecosystem: github-actions
     directory: /
