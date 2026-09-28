@@ -96,7 +96,7 @@ export default function Domains({ ctx }) {
                   {COLUMNS.map((c) => (
                     <th
                       key={c.id}
-                      className={`sortable${c.num ? ' num' : ''}`}
+                      className={`sortable${c.num ? ' num' : ''}${c.id === 'host' ? ' cell-sticky' : ''}`}
                       onClick={() => toggleSort(c.id)}
                     >
                       {c.label}
@@ -108,7 +108,9 @@ export default function Domains({ ctx }) {
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.host}>
-                    <td className="cell-wide">
+                    {/* On phones the host name is shown whole and pinned while
+                        the numbers scroll sideways (styles.css, "phones"). */}
+                    <td className="cell-wide cell-sticky cell-full">
                       <Link to={`/domains/${encodeURIComponent(r.host)}`} className="truncate" title={r.host}>
                         {r.host}
                       </Link>

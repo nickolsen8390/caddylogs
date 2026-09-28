@@ -4,6 +4,17 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org): a new major version (2.0.0) is the
 only kind that can require you to change anything when upgrading.
 
+## [1.0.1] — 2026-09-28
+
+### Fixed
+
+- Phones: the source address in the live log and request explorer is no
+  longer cut off. It stays beside the time and status when it fits, and moves
+  to its own line when it doesn't (long IPv6 addresses).
+- Phones: domain names on the Domains page are shown in full and stay pinned
+  on the left while the numbers scroll sideways. Name columns in the other
+  tables keep a minimum width instead of being squeezed to nothing.
+
 ## [1.0.0] — 2026-09-27
 
 First public release.
@@ -39,4 +50,5 @@ First public release.
   filesystem, no Linux capabilities and `no-new-privileges`.
 - Works on phones: slide-in menu, readable request lists, folding filters.
 
+[1.0.1]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.0.1
 [1.0.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.0.0

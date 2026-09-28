@@ -745,6 +745,21 @@ body.nav-locked { overflow: hidden; }
   .panel-body { padding: 12px; }
   .panel-body.flush { overflow-x: auto; }       /* wide tables scroll sideways */
   table.data th, table.data td { padding: 7px 9px; }
+  /* The name column of a table (domain, path, AS…) normally takes whatever
+     width the numbers leave over. On a phone the numbers leave nearly nothing,
+     so it gets a floor instead and the table scrolls sideways. */
+  table.data td.cell-wide { min-width: 170px; }
+  /* Columns that must stay whole — the domain list's host names. The column
+     stays pinned on the left while the numbers scroll past it; a very long
+     name wraps rather than taking more than about half the screen. */
+  table.data .cell-sticky {
+    position: sticky; left: 0; z-index: 1;
+    background: var(--panel); box-shadow: 1px 0 0 var(--border-soft);
+  }
+  table.data th.cell-sticky { z-index: 2; }
+  table.data tbody tr:hover .cell-sticky { background: var(--panel-2); }
+  table.data td.cell-full { max-width: 55vw; width: auto; }
+  table.data td.cell-full .truncate { white-space: normal; overflow-wrap: anywhere; }
   .grid { gap: 10px; }
   .grid.stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .stat-value { font-size: 20px; }
@@ -763,25 +778,28 @@ body.nav-locked { overflow: hidden; }
   .modal { max-height: calc(100dvh - 16px); }
   .unsaved-bar { top: -12px; }
 
-  /* --- request rows: two lines, the URL on its own and allowed to wrap ---
-     Line 1: time, status, method, source (right), duration.
-     Line 2: host + path + query, up to three lines; the whole thing once the
-     row is opened. */
+  /* --- request rows: a wrapping line of facts, then the URL on its own ---
+     Line 1: time, status, method, duration, then the source address pushed to
+     the right. The address is never cut off: when it doesn't fit beside the
+     rest (a long IPv6 address on a narrow phone) it drops to a line of its
+     own, rather than being ellipsized as a fixed column would be.
+     Last line: host + path + query, up to three lines; the whole thing once
+     the row is opened. */
   .log-row {
-    grid-template-columns: auto auto auto minmax(0, 1fr) auto;
-    grid-template-areas:
-      "time status method ip dur"
-      "url  url    url    url url";
+    display: flex; flex-wrap: wrap; align-items: baseline;
     gap: 2px 8px; padding: 7px 12px; line-height: 1.45;
   }
-  .log-row .col-time { grid-area: time; }
-  .log-row .col-status { grid-area: status; }
-  .log-row .col-method { grid-area: method; }
-  .log-row .col-ip { grid-area: ip; text-align: right; }
-  .log-row .col-dur { grid-area: dur; }
+  .log-row .col-time { order: 1; }
+  .log-row .col-status { order: 2; }
+  .log-row .col-method { order: 3; }
+  .log-row .col-dur { order: 4; }
+  .log-row .col-ip.truncate {
+    order: 5; flex: 0 1 auto; margin-left: auto; text-align: right;
+    white-space: normal; overflow: visible; overflow-wrap: anywhere;
+  }
   .log-row .col-size { display: none; }
   .log-row .col-url.truncate {
-    grid-area: url;
+    order: 6; flex: 1 1 100%;
     white-space: normal; overflow-wrap: anywhere; word-break: break-all;
     display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3;
     overflow: hidden;
