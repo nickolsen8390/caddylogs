@@ -1,7 +1,7 @@
 // Connectivity probe for the notoolkit API, run from inside the container so
 // it tests the network path the enricher actually uses.
 //
-//   docker compose run --rm --no-deps ingest node src/tools/probe.js [ip] [--force]
+//   docker compose run --rm --no-deps app node src/tools/probe.js [ip] [--force]
 //
 // Touches no database and writes nothing. Respects NOTOOLKIT_ENABLED=false:
 // with lookups disabled for offline operation, it makes no network request

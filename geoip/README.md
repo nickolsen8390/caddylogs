@@ -2,7 +2,7 @@
 
 Country data comes from MaxMind, because notoolkit.com provides ASN
 information only. Put the `.mmdb` files here; this directory is mounted
-read-only at `/geoip` inside both containers.
+read-only at `/geoip` inside the app container.
 
 Expected files:
 

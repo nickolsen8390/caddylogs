@@ -2,7 +2,7 @@
 // and hard to notice: CIDR matching, IP normalisation, and log parsing.
 // Touches no database, no network, no log files.
 //
-//   docker compose run --rm --no-deps web node src/tools/selftest.js
+//   docker compose run --rm --no-deps app node src/tools/selftest.js
 
 import { cidrMatcher, isPrivateIp, normalizeIp, isIPv4 } from '../util/net.js';
 import { parseLine, latencyBucket, extensionOf, refererHost } from '../ingest/parser.js';

@@ -96,7 +96,10 @@ export async function buildServer() {
     return payload;
   });
 
-  await app.register(cookie, { secret: config.auth.secret, parseOptions: {} });
+  // No cookie signing secret: the session cookie is 32 random bytes that the
+  // server looks up (stored hashed), so there is nothing to sign — a forged
+  // or altered cookie simply matches no session.
+  await app.register(cookie, { parseOptions: {} });
 
   await app.register(rateLimit, {
     global: false,

@@ -157,7 +157,7 @@ function ExpandedRequest({ row, context }) {
           {problem?.message ?? 'unknown error'}
           {`\n\nThis is a fault, not a retention limit.\n`}
           {problem?.status
-            ? `Check the web container's log for a matching entry.`
+            ? `Check the app container's log (docker compose logs app) for a matching entry.`
             : // No status at all means fetch() itself rejected: the request
               // never left the browser, so the server log will be empty.
               `There is no HTTP status, so the request never reached the server —\n` +

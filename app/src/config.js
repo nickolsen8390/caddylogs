@@ -34,7 +34,6 @@ export const config = {
   ignoreCidrs: list(env.IGNORE_CIDRS),
 
   auth: {
-    secret: env.SESSION_SECRET || '',
     users: env.AUTH_USERS || '',
     ttlHours: int(env.SESSION_TTL_HOURS, 12),
     idleMinutes: int(env.SESSION_IDLE_MINUTES, 120),
@@ -122,11 +121,6 @@ export const config = {
 export function validateConfig({ needsAuth }) {
   const problems = [];
   if (needsAuth) {
-    if (!config.auth.secret || config.auth.secret.length < 32) {
-      problems.push(
-        'SESSION_SECRET is missing or shorter than 32 characters. Generate one with: openssl rand -hex 32'
-      );
-    }
     if (!config.auth.users.trim()) {
       problems.push('AUTH_USERS is empty. Set at least one user, e.g. AUTH_USERS=admin:s0me-long-password');
     }

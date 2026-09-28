@@ -1,0 +1,30 @@
+# Weekly pull requests for outdated dependencies. Each ecosystem's updates
+# arrive grouped in one PR, and the image workflow builds every PR as a check.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /app
+    schedule:
+      interval: weekly
+    groups:
+      server:
+        patterns: ['*']
+
+  - package-ecosystem: npm
+    directory: /app/ui
+    schedule:
+      interval: weekly
+    groups:
+      ui:
+        patterns: ['*']
+
+  # The Node.js base image in app/Dockerfile.
+  - package-ecosystem: docker
+    directory: /app
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
