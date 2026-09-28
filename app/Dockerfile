@@ -1,5 +1,5 @@
 # Caddy Log Interface — one container that runs next to Caddy.
-# Published as nickolsen8390/caddylogs; source: https://github.com/nickolsen8390/caddylogs
+# Published as victimofareload/caddylogs; source: https://github.com/nickolsen8390/caddylogs
 #
 # Releases are built and pushed by .github/workflows/docker.yml when a version
 # tag (v1.2.3) is pushed. To build locally, from the repository root:

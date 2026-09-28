@@ -77,7 +77,7 @@ docker run -d --name caddylogs --restart unless-stopped \
   --user 1000:1000 --read-only --tmpfs /tmp -p 8899:8899 \
   -e AUTH_USERS='admin:<password>' -e CADDY_MANAGE=false \
   -v "$PWD/data:/data" -v /var/log/caddy:/logs:ro \
-  nickolsen8390/caddylogs:1
+  victimofareload/caddylogs:1
 ```
 
 Caddy must write JSON access logs (`format json`) into the mounted directory,

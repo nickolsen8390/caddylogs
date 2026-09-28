@@ -25,7 +25,7 @@ included compose file runs Caddy and the interface together.
 - **Health** — what the ingester is reading and whether IP enrichment is
   working.
 
-Image: [`nickolsen8390/caddylogs`](https://hub.docker.com/r/nickolsen8390/caddylogs)
+Image: [`victimofareload/caddylogs`](https://hub.docker.com/r/victimofareload/caddylogs)
 (linux/amd64 and linux/arm64) · License: [MIT](LICENSE) ·
 Security reports: see [SECURITY.md](SECURITY.md)
 
@@ -579,7 +579,7 @@ then reclaim the old volume with
 ## 10. The container image
 
 Everything the interface needs is in one image,
-[`nickolsen8390/caddylogs`](https://hub.docker.com/r/nickolsen8390/caddylogs),
+[`victimofareload/caddylogs`](https://hub.docker.com/r/victimofareload/caddylogs),
 built from `app/Dockerfile` for linux/amd64 and linux/arm64. It works with
 plain `docker run` as well as compose: the paths it expects are built in, it
 has a health check, and it runs as a non-root user.
@@ -608,7 +608,7 @@ docker run -d --name caddy-log-interface --user 1000:1000 \
   -p 8899:8899 --read-only --tmpfs /tmp \
   -e AUTH_USERS='admin:...' -e CADDY_MANAGE=false \
   -v "$PWD/data:/data" -v /var/log/caddy:/logs:ro \
-  nickolsen8390/caddylogs:1
+  victimofareload/caddylogs:1
 ```
 
 ### How releases are made

@@ -33,7 +33,7 @@ First public release.
 
 ### Deployment
 
-- One container (`nickolsen8390/caddylogs`) that runs next to Caddy, for
+- One container (`victimofareload/caddylogs`) that runs next to Caddy, for
   linux/amd64 and linux/arm64, with a compose file that runs both.
 - The image runs as a non-root user; the compose file adds a read-only
   filesystem, no Linux capabilities and `no-new-privileges`.

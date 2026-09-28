@@ -24,7 +24,7 @@ reasonable time for a fix before disclosing publicly.
 ## Supported versions
 
 Security fixes are made for the latest release in the current major version
-(1.x). Please upgrade to the newest image (`nickolsen8390/caddylogs:1`) before
+(1.x). Please upgrade to the newest image (`victimofareload/caddylogs:1`) before
 reporting, in case the problem is already fixed.
 
 ## What is in scope

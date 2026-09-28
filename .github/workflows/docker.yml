@@ -23,7 +23,7 @@ permissions:
   contents: read
 
 env:
-  IMAGE: nickolsen8390/caddylogs
+  IMAGE: victimofareload/caddylogs
 
 jobs:
   image:

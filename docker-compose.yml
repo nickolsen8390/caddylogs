@@ -66,7 +66,7 @@ services:
     # APP_IMAGE in .env if you prefer to upgrade by hand.
     # To build from this source tree instead, add the build override:
     #   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
-    image: ${APP_IMAGE:-nickolsen8390/caddylogs:1}
+    image: ${APP_IMAGE:-victimofareload/caddylogs:1}
     container_name: caddy-log-interface
     restart: unless-stopped
     env_file: .env
