@@ -107,8 +107,7 @@ Then:
 docker compose up -d
 ```
 
-This pulls the published image. To build it from this source tree instead:
-`docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build`.
+This pulls the published image, `victimofareload/caddylogs`.
 
 The UI is on `http://<host>:8899` (`APP_PORT`), published on all interfaces per
 `BIND_ADDRESS`. Put it behind Caddy for TLS — see `Caddyfile.example`.
@@ -627,12 +626,13 @@ The workflow builds for amd64 and arm64, pushes `1.0.1`, `1.0`, `1` and
 Docker Hub description from `DOCKERHUB.md`. Before tagging, bump `version` in
 `app/package.json` and add the release to `CHANGELOG.md`.
 
-To build the image locally: `docker build -t caddylogs:local ./app`, or run the
-whole stack from source with the build override:
+To run a locally built image instead, build it and point `APP_IMAGE` at it:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+docker build -t caddylogs:local ./app
 ```
+
+Then set `APP_IMAGE=caddylogs:local` in `.env` and run `docker compose up -d`.
 
 ## 11. Development
 

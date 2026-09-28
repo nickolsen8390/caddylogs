@@ -64,8 +64,6 @@ services:
     # The published image. `:1` follows every 1.x release (new features and
     # fixes, no breaking changes); pin an exact version such as :1.0.0 with
     # APP_IMAGE in .env if you prefer to upgrade by hand.
-    # To build from this source tree instead, add the build override:
-    #   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
     image: ${APP_IMAGE:-victimofareload/caddylogs:1}
     container_name: caddy-log-interface
     restart: unless-stopped
