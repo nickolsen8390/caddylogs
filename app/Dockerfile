@@ -8,7 +8,7 @@
 # Lockfiles (package-lock.json) are used when present, for reproducible builds.
 
 # ---------- stage 1: build the React UI ----------
-FROM node:22-bookworm-slim AS ui
+FROM node:26-bookworm-slim AS ui
 WORKDIR /ui
 COPY ui/package*.json ./
 RUN if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; \
@@ -17,7 +17,7 @@ COPY ui/ ./
 RUN npm run build
 
 # ---------- stage 2: build native server deps ----------
-FROM node:22-bookworm-slim AS deps
+FROM node:26-bookworm-slim AS deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 make g++ ca-certificates \
  && rm -rf /var/lib/apt/lists/*
@@ -27,7 +27,7 @@ RUN if [ -f package-lock.json ]; then npm ci --omit=dev --no-audit --no-fund; \
     else npm install --omit=dev --no-audit --no-fund; fi
 
 # ---------- stage 3: runtime ----------
-FROM node:22-bookworm-slim AS runtime
+FROM node:26-bookworm-slim AS runtime
 
 ARG VERSION=dev
 ARG REVISION=unknown
