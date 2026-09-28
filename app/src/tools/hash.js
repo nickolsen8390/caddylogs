@@ -1,7 +1,7 @@
 // Interactive helper: turn a password into the `scrypt$salt$hash` form that
 // AUTH_USERS accepts, so the plaintext never has to live in .env.
 //
-//   docker compose run --rm --no-deps web node src/tools/hash.js
+//   docker compose run --rm --no-deps app node src/tools/hash.js
 
 import readline from 'node:readline';
 import { Writable } from 'node:stream';

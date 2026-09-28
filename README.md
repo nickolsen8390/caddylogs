@@ -1,9 +1,10 @@
 # Caddy Log Interface
 
-A self-hosted dashboard and control panel for Caddy. One Docker Compose stack
-runs Caddy itself alongside the interface: it reads Caddy's JSON access logs
+A self-hosted dashboard and control panel for Caddy, shipped as a single
+container that runs alongside Caddy. It reads Caddy's JSON access logs
 read-only and keeps its own statistics (so history survives log rotation and
-deletion), and it edits Caddy's configuration, reloading Caddy for you.
+deletion), and it edits Caddy's configuration, reloading Caddy for you. The
+included compose file runs Caddy and the interface together.
 
 - **Caddy configuration** — add, remove, enable and disable sites; change
   domains, upstreams, IP allowlists, TLS, compression, snippets and global
@@ -24,6 +25,20 @@ deletion), and it edits Caddy's configuration, reloading Caddy for you.
 - **Health** — what the ingester is reading and whether IP enrichment is
   working.
 
+Image: [`nickolsen8390/caddylogs`](https://hub.docker.com/r/nickolsen8390/caddylogs)
+(linux/amd64 and linux/arm64) · License: [MIT](LICENSE) ·
+Security reports: see [SECURITY.md](SECURITY.md)
+
+> **Outbound lookups — on by default, one setting to turn off.** To show which
+> network each visitor belongs to (BGP prefix, AS number and name, registry,
+> WHOIS), the app sends each **public visitor IP address** to the free
+> [notoolkit.com](https://notoolkit.com) API — once per address, then cached
+> locally — along with AS numbers for registry detail. No URLs, user agents,
+> hostnames or other log content are sent, and private, loopback and
+> link-local addresses never are. Set `NOTOOLKIT_ENABLED=false` in `.env` to
+> make no outbound calls at all; visitor countries still work offline from
+> MaxMind. Details in [§6](#6-ip-enrichment).
+
 ---
 
 ## 1. Requirements
@@ -31,21 +46,19 @@ deletion), and it edits Caddy's configuration, reloading Caddy for you.
 - Docker with the Compose plugin
 - Nothing else listening on ports 80/443 — the stack runs Caddy (2.8 or newer)
 - A MaxMind GeoLite2 country database for visitor-country data (free, see below)
-- Outbound HTTPS to notoolkit.com for BGP prefix / ASN data (no key required)
+- Outbound HTTPS to notoolkit.com for BGP prefix / ASN data (no key required;
+  optional — see above)
 
 ## 2. Install
 
 ```bash
-git clone <this repo> caddy-log-interface && cd caddy-log-interface
+git clone https://github.com/nickolsen8390/caddylogs.git && cd caddylogs
 cp .env.example .env
 ```
 
-Edit `.env`. The two settings you must change:
+Edit `.env`. The one setting you must change:
 
 ```bash
-# 32+ random bytes; sessions are signed and stored against this
-SESSION_SECRET=<paste output of: openssl rand -hex 32>
-
 # who may log in
 AUTH_USERS=admin:<a long, unique password>
 ```
@@ -54,27 +67,32 @@ AUTH_USERS=admin:<a long, unique password>
 
 All storage is bind-mounted — there are no named volumes. Docker manages
 ownership for named volumes but **not** for bind mounts, so the directories the
-interface writes to have to be owned by the UID the containers run as:
+interface writes to have to be owned by the user the app container runs as —
+`PUID:PGID` in `.env`, `1000:1000` by default:
 
 ```bash
 mkdir -p ./data ./caddy/conf ./caddy/run ./caddy/logs ./caddy/data ./caddy/config
-cp Caddyfile.example ./caddy/conf/Caddyfile       # then edit the host name
-sudo chown -R "$(id -u):$(id -g)" ./data ./caddy/conf ./caddy/run
-chmod 700 ./caddy/run
-printf 'PUID=%s\nPGID=%s\n' "$(id -u)" "$(id -g)" >> .env
+cp Caddyfile.example ./caddy/conf/Caddyfile       # then edit the host name and allowed addresses
+sudo chown -R 1000:1000 ./data ./caddy/conf ./caddy/run
+sudo chmod 700 ./caddy/run
 ```
 
-(Or leave `PUID`/`PGID` at their default of `1000` and `chown 1000:1000` those
-three.) If `./data` is wrong, the containers exit immediately with a message
-naming the exact `chown` to run — they will not start half-working. If
-`./caddy/conf` is wrong, the Caddy pages say the Caddyfile is read-only.
+UID 1000 does not need to exist as an account on the host; it only has to own
+those directories. Do **not** set `PUID=0`: running the app as root inside the
+container throws away a layer of protection, and nothing needs it. To use a
+different ID, set `PUID`/`PGID` in `.env` and `chown` to the same values.
+
+If `./data` is wrong, the container exits immediately with a message naming
+the exact `chown` to run — it will not start half-working. If `./caddy/conf`
+is wrong, the Caddy pages say the Caddyfile is read-only; if `./caddy/run` is
+wrong, they say Caddy's admin API is not reachable (permission denied).
 
 | Directory | Written by | Read by |
 |---|---|---|
-| `./data` | web, ingest | web, ingest |
-| `./caddy/conf` (the Caddyfile) | web, on apply | caddy, web |
-| `./caddy/run` (admin socket) | caddy | web |
-| `./caddy/logs` | caddy | web, ingest (read-only) |
+| `./data` | app | app |
+| `./caddy/conf` (the Caddyfile) | app, on apply | caddy, app |
+| `./caddy/run` (admin socket) | caddy | app |
+| `./caddy/logs` | caddy | app (read-only) |
 | `./caddy/data`, `./caddy/config` (certificates) | caddy | caddy only |
 
 `./caddy/run` holds Caddy's admin socket. Its `0700` mode, owned by `PUID`, is
@@ -86,8 +104,11 @@ NFS or CIFS.
 Then:
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
+
+This pulls the published image. To build it from this source tree instead:
+`docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build`.
 
 The UI is on `http://<host>:8899` (`APP_PORT`), published on all interfaces per
 `BIND_ADDRESS`. Put it behind Caddy for TLS — see `Caddyfile.example`.
@@ -97,7 +118,7 @@ The UI is on `http://<host>:8899` (`APP_PORT`), published on all interfaces per
 `AUTH_USERS` accepts a pre-computed hash instead of a plaintext password:
 
 ```bash
-docker compose run --rm --no-deps web node src/tools/hash.js
+docker compose run --rm --no-deps app node src/tools/hash.js
 ```
 
 It prints an `AUTH_USERS=user:scrypt$...$...` line to paste in. Multiple users
@@ -129,7 +150,7 @@ all carry over. With the old layout `<dir>/Caddyfile`, `<dir>/data`,
 ```bash
 mkdir -p <dir>/conf <dir>/run
 mv <dir>/Caddyfile <dir>/conf/Caddyfile       # a directory mount, for atomic saves
-sudo chown -R "$(id -u):$(id -g)" <dir>/conf <dir>/run && chmod 700 <dir>/run
+sudo chown -R 1000:1000 <dir>/conf <dir>/run && sudo chmod 700 <dir>/run
 sudo chmod 644 <dir>/logs/*.log               # existing logs were created 0600
 ```
 
@@ -145,8 +166,7 @@ CADDY_RUN_PATH=<dir>/run
 Then, in the Caddyfile, add `mode 0644` inside each `output file` block (see
 `Caddyfile.example`) so files Caddy creates after a rotation stay readable, and
 remove any `admin` global option. Stop the old Caddy
-(`docker compose -f <old compose file> down`) and `docker compose up -d --build`
-here.
+(`docker compose -f <old compose file> down`) and `docker compose up -d` here.
 
 ## 3. Managing Caddy
 
@@ -192,16 +212,20 @@ tabs, like `caddy fmt`.
 running something different from the file and offer *Reload Caddy from the
 file*. **If Caddy is down** — possibly because of the file — the pages say so,
 and the review screen offers *Save file without reloading*; Caddy's restart
-policy picks the fixed file up on its next attempt. The web container
-deliberately does not depend on the caddy container, so the tool you fix Caddy
-with is up even when Caddy is not.
+policy picks the fixed file up on its next attempt. The app container does
+not depend on the caddy container, so it keeps running when Caddy is down —
+but if you normally reach the interface *through* Caddy, it is then only
+reachable directly on port 8899 over plain HTTP, where `COOKIE_SECURE=true`
+refuses sign-in. In that case fix `caddy/conf/Caddyfile` by hand (Caddy's
+error names the line: `docker compose logs caddy`) and
+`docker compose restart caddy`.
 
 `CADDY_EDITORS` limits who may apply changes (everyone else can still view).
 `CADDY_MANAGE=false` switches configuration management off: the Caddy menu
 and pages disappear from the interface, and the configuration API refuses
 every request. Caddy itself keeps running from its Caddyfile. It defaults to
-`true`; restart the web container after changing it
-(`docker compose up -d web`).
+`true`; recreate the app container after changing it
+(`docker compose up -d app`).
 
 Limits: `import` of other *files* (as opposed to snippets) is shown and kept,
 but those files are not editable here, and relative import paths resolve inside
@@ -213,7 +237,7 @@ the Caddy container, so use absolute ones. Environment placeholders
 Before wondering why the dashboard is empty:
 
 ```bash
-docker compose run --rm --no-deps ingest node src/tools/inspect.js
+docker compose run --rm --no-deps app node src/tools/inspect.js
 ```
 
 This parses a sample of real lines and reports how many became requests, which
@@ -224,7 +248,7 @@ CIDR matching, IP normalisation, log-field extraction. No database, no network,
 no log files:
 
 ```bash
-docker compose run --rm --no-deps web node src/tools/selftest.js
+docker compose run --rm --no-deps app node src/tools/selftest.js
 ```
 
 Worth running after changing `TRUSTED_PROXIES` or `IGNORE_CIDRS`, since those
@@ -297,6 +321,38 @@ starts cleanly at zero. Truncation in place is detected and restarts that file.
 
 ## 6. IP enrichment
 
+### What is sent, and how to turn it off
+
+notoolkit.com lookups are **on by default** and are the only outbound
+connections the app makes. They send:
+
+- each **public** visitor IP address, once — the answer is cached in the local
+  database for `ENRICH_TTL_DAYS` (30 by default) before it is asked again;
+- each AS number seen, once, for registry detail (refreshed every
+  `ENRICH_ASN_TTL_DAYS`, 90 by default).
+
+Nothing else leaves the server: no URLs, paths, query strings, user agents,
+referrers, hostnames or timestamps. Private, loopback and link-local addresses
+(10/8, 172.16/12, 192.168/16, 100.64/10, 127/8, 169.254/16, ::1, fc00::/7,
+fe80::/10) are never sent.
+
+**To disable it**, set in `.env` and recreate the container:
+
+```bash
+NOTOOLKIT_ENABLED=false
+```
+
+```bash
+docker compose up -d app
+```
+
+With it off the app makes no outbound connections at all. Visitor countries
+still work (MaxMind is local), and with `GeoLite2-ASN.mmdb` present the AS
+number and organisation still resolve locally; you lose BGP prefix, registry
+and WHOIS detail. Anything already cached is kept.
+
+### Sources
+
 | Source | Provides | Failure behaviour |
 |---|---|---|
 | MaxMind GeoLite2 | **visitor country** (and ASN if the ASN db is present) | local, always available |
@@ -360,24 +416,10 @@ Plain HTTP is appropriate here: it stays on the local network, and the payload
 is public routing data, not credentials. Do not use `https://` with an address
 — the certificate will not match the IP and TLS will fail.
 
-The alternative — keep TLS and go through Caddy — is a hosts entry pointing the
-public name at the Docker host. That is a `.env` setting:
+Verify from inside the container:
 
 ```bash
-EXTRA_HOST=notoolkit.com:host-gateway
-```
-
-`host-gateway` is a Docker alias for the host itself, where Caddy is listening,
-so the request crosses the bridge with correct SNI and a valid certificate.
-With this set, leave `NOTOOLKIT_API_URL` as the public `https://` address and
-`NOTOOLKIT_HOST_HEADER` blank. Leave `EXTRA_HOST` empty to disable it;
-`EXTRA_HOST_2` is available if you need a second mapping. Requires Docker
-Engine 20.10 or newer.
-
-Either way, verify from inside the container:
-
-```bash
-docker compose run --rm --no-deps ingest node src/tools/probe.js
+docker compose run --rm --no-deps app node src/tools/probe.js
 ```
 
 The probe reports DNS, TCP and HTTP separately with timings, and names the
@@ -388,7 +430,10 @@ likely cause when a stage fails. It writes nothing.
 The interface is built on the assumption it may be internet-facing.
 
 - Session cookie is `HttpOnly`, `Secure`, `SameSite=Strict`; the session id is
-  stored **hashed**, so a stolen database file does not yield live sessions.
+  32 random bytes stored **hashed**, so a stolen database file does not yield
+  live sessions. Sessions are looked up server-side, so there is no signing
+  secret to configure or leak. (Older versions required `SESSION_SECRET`; it
+  is now ignored and can be deleted from `.env`.)
 - Passwords are verified with scrypt and a constant-time comparison. Unknown
   usernames cost the same as known ones, so accounts cannot be enumerated.
 - Failed logins are throttled per source IP (`LOGIN_MAX_ATTEMPTS` per
@@ -443,12 +488,46 @@ likely to change:
 ## 9. Operating
 
 ```bash
-docker compose logs -f ingest        # what the tailer is doing
-docker compose logs -f web
+docker compose logs -f app           # the interface: web requests and the tailer
 docker compose logs -f caddy         # Caddy itself: certificates, config loads
-docker compose restart ingest        # safe: checkpoints are durable
+docker compose restart app           # safe: read positions are durable
 docker compose down                  # your data directory is untouched
 ```
+
+The app container runs two processes: the web UI/API, and the log ingester as
+its child. Their log lines are told apart by the `scope` field (`web`, `api`,
+`caddy` for the former; `ingest`, `tail`, `enrich` for the latter). If the
+ingester dies it is restarted automatically, backing off up to a minute
+between attempts, while the web UI stays up. The container's health check
+reports the web UI.
+
+`APP_MODE` can split them again if you ever need to: `web` runs only the UI
+and API, `ingest` only the ingester — run two containers from the same image
+against the same `DATA_PATH`. The default, `all`, runs both.
+
+### Upgrading
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+The default image tag, `:1`, follows every 1.x release — new features and
+fixes, never a breaking change. Releases are listed in
+[CHANGELOG.md](CHANGELOG.md).
+
+### Upgrading from separate web and ingest containers
+
+Earlier versions ran the interface as two containers, `cli-web` and
+`cli-ingest`. The compose service is now called `app`, so remove the old
+containers while starting the new one:
+
+```bash
+docker compose up -d --remove-orphans
+```
+
+Nothing else changes: the same `.env`, database and mounts are used, and the
+ingester resumes where the old container stopped.
 
 Because storage is a bind mount, `docker compose down -v` does **not** delete
 your statistics — the only way to lose them is to remove `DATA_PATH` yourself.
@@ -459,7 +538,7 @@ The database is a file you can see, so take a consistent copy with SQLite's own
 backup (safe to run while the stack is live — do not just `cp` a WAL database):
 
 ```bash
-docker compose exec web \
+docker compose exec app \
   node -e "require('better-sqlite3')('/data/stats.db').backup('/data/backup.db')"
 mv ./data/backup.db ./stats-$(date +%F).db
 ```
@@ -489,27 +568,88 @@ docker run --rm \
   -v caddy-log-interface_data:/from \
   -v "$PWD/data":/to \
   alpine sh -c 'cp -a /from/. /to/'
-sudo chown -R "$(id -u):$(id -g)" ./data
-docker compose up -d --build
+sudo chown -R 1000:1000 ./data
+docker compose up -d
 ```
 
 Confirm `./data/stats.db` is there and the Health page still shows your history,
 then reclaim the old volume with
 `docker volume rm caddy-log-interface_data`.
 
-## 10. Development
+## 10. The container image
+
+Everything the interface needs is in one image,
+[`nickolsen8390/caddylogs`](https://hub.docker.com/r/nickolsen8390/caddylogs),
+built from `app/Dockerfile` for linux/amd64 and linux/arm64. It works with
+plain `docker run` as well as compose: the paths it expects are built in, it
+has a health check, and it runs as a non-root user.
+
+| Tag | Follows |
+|---|---|
+| `1.0.0` | exactly that release — never changes |
+| `1.0` | the latest 1.0.x (fixes only) |
+| `1` | the latest 1.x (what the compose file uses) |
+| `latest` | the newest release, including a future 2.0 with breaking changes |
+
+| Mount at | Contents | Access |
+|---|---|---|
+| `/data` | SQLite database | read-write, owned by the container user |
+| `/logs` | Caddy's JSON access logs | read-only |
+| `/geoip` | GeoLite2 `.mmdb` files (optional) | read-only |
+| `/caddy` | the directory holding the `Caddyfile` (optional; for config management) | read-write |
+| `/run/caddy` | Caddy's admin socket (optional; for config management) | read-write |
+
+The only required setting is `AUTH_USERS`; everything else has a default (see
+`.env.example`). Without `/caddy` and `/run/caddy`, set
+`CADDY_MANAGE=false` and the image is a pure log dashboard.
+
+```bash
+docker run -d --name caddy-log-interface --user 1000:1000 \
+  -p 8899:8899 --read-only --tmpfs /tmp \
+  -e AUTH_USERS='admin:...' -e CADDY_MANAGE=false \
+  -v "$PWD/data:/data" -v /var/log/caddy:/logs:ro \
+  nickolsen8390/caddylogs:1
+```
+
+### How releases are made
+
+Images are built by GitHub Actions (`.github/workflows/docker.yml`), not by
+hand. Every push to `main` and every pull request builds the image as a check.
+Pushing a version tag publishes it:
+
+```bash
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+The workflow builds for amd64 and arm64, pushes `1.0.1`, `1.0`, `1` and
+`latest` to Docker Hub with provenance and SBOM attestations, and refreshes the
+Docker Hub description from `DOCKERHUB.md`. Before tagging, bump `version` in
+`app/package.json` and add the release to `CHANGELOG.md`.
+
+To build the image locally: `docker build -t caddylogs:local ./app`, or run the
+whole stack from source with the build override:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+```
+
+## 11. Development
 
 ```bash
 cd app && npm install && cd ui && npm install
 # terminal 1 — API + ingest against a local log directory
 LOG_DIR=/path/to/logs DB_PATH=./data/stats.db APP_MODE=all \
-  SESSION_SECRET=$(openssl rand -hex 32) AUTH_USERS=dev:devpassword123 \
+  AUTH_USERS=dev:devpassword123 \
   COOKIE_SECURE=false node src/index.js
 # terminal 2 — UI with hot reload, proxying /api to the above
 cd app/ui && npm run dev
 ```
 
-## 11. Known limits
+Pull requests are welcome. Please keep changes focused, describe how you
+tested them, and run the self-test (`node src/tools/selftest.js` in `app/`).
+
+## 12. Known limits
 
 - Latency percentiles are computed from a fixed histogram, so they are accurate
   to the bucket edge, not exact. The bucket labels are shown alongside.
@@ -522,3 +662,9 @@ cd app/ui && npm run dev
 - ASNs resolved after a request was already aggregated are applied from the
   next request by that address onward; the rollup pass repairs rows that were
   still pending when it ran.
+
+## License
+
+[MIT](LICENSE) © 2026 Nick Olsen. The container image also includes a Debian
+base system, the Node.js runtime and npm dependencies, each under its own
+license; each release's SBOM on Docker Hub lists them.

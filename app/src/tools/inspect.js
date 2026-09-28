@@ -1,6 +1,6 @@
 // Parser sanity check against real logs, without writing anything.
 //
-//   docker compose run --rm --no-deps ingest node src/tools/inspect.js [count]
+//   docker compose run --rm --no-deps app node src/tools/inspect.js [count]
 //
 // Prints how many lines parsed, why the rest did not, and a couple of fully
 // decoded examples. Run this first if the dashboard looks empty.
