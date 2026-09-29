@@ -4,6 +4,16 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org): a new major version (2.0.0) is the
 only kind that can require you to change anything when upgrading.
 
+## [1.0.2] — 2026-09-29
+
+### Fixed
+
+- With notoolkit switched off (`NOTOOLKIT_ENABLED=false`), the interface no
+  longer shows the enrichment queue or warns that it is not draining. The
+  queue only holds notoolkit retries, so it is now emptied at startup and not
+  used at all while lookups are off. The Health page shows notoolkit as
+  switched off instead of its past calls and errors.
+
 ## [1.0.1] — 2026-09-28
 
 ### Fixed
@@ -50,5 +60,6 @@ First public release.
   filesystem, no Linux capabilities and `no-new-privileges`.
 - Works on phones: slide-in menu, readable request lists, folding filters.
 
+[1.0.2]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.0.2
 [1.0.1]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.0.1
 [1.0.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.0.0

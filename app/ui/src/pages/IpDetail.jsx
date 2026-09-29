@@ -81,8 +81,14 @@ export default function IpDetail({ ctx }) {
           </div>
         ) : (
           <Empty>
-            This address has not been enriched yet. It is queued — check the{' '}
-            <Link to="/health">Health</Link> page if the queue is not draining.
+            {ctx.features?.notoolkit ? (
+              <>
+                This address has not been enriched yet. It is queued — check the{' '}
+                <Link to="/health">Health</Link> page if the queue is not draining.
+              </>
+            ) : (
+              'This address has not been looked up yet. It will be the next time it makes a request.'
+            )}
           </Empty>
         )}
       </Panel>

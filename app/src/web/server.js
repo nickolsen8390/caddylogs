@@ -21,7 +21,7 @@ import { initMaxmind } from '../enrich/maxmind.js';
 const log = logger('web');
 
 /** Optional parts of the interface, so the UI can leave out what is switched off. */
-const features = () => ({ caddy: config.caddy.enabled });
+const features = () => ({ caddy: config.caddy.enabled, notoolkit: config.notoolkit.enabled });
 
 /** Operator-facing next step for each way the secure-context check can fail. */
 const INSECURE_HINTS = {

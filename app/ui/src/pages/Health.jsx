@@ -41,8 +41,12 @@ export default function Health({ ctx }) {
         <Stat label="Aggregate rows" value={compact(ingest.counts.dims + ingest.counts.rollup)}
               sub={`retained ${meta.data?.retention?.days ?? '—'} days`} />
         <Stat label="Cached IPs" value={compact(ingest.counts.ipInfo)} sub="country / ASN lookups" />
-        <Stat label="Enrichment queue" value={compact(enrichment.queueDepth)}
-              tone={enrichment.queueDepth > 5000 ? 'amber' : 'green'} sub="IPs pending resolution" />
+        {/* The queue holds notoolkit retries only; it is not used when
+            lookups are switched off. */}
+        {enrichment.notoolkitEnabled && (
+          <Stat label="Enrichment queue" value={compact(enrichment.queueDepth)}
+                tone={enrichment.queueDepth > 5000 ? 'amber' : 'green'} sub="IPs pending resolution" />
+        )}
         <Stat label="Parse rate (today)" value={parseRate === null ? '—' : pct(parseRate)}
               sub={today ? `${num(today.parsed)} of ${num(today.lines)} lines` : 'no lines yet'} />
       </div>
@@ -66,25 +70,35 @@ export default function Health({ ctx }) {
               <dl className="kv">
                 <dt>Purpose</dt>
                 <dd>BGP prefix, originating ASN, and RIR registrant detail</dd>
-                <dt>ASNs pending detail</dt>
-                <dd>
-                  {enrichment.notoolkitEnabled
-                    ? `${num(enrichment.asnPending ?? 0)} awaiting their one-off registry lookup`
-                    : 'none — lookups are disabled (NOTOOLKIT_ENABLED=false), running offline'}
-                </dd>
-                <dt>Calls</dt>
-                <dd>{num(notoolkit?.calls ?? 0)} ({num(notoolkit?.failures ?? 0)} failed)</dd>
-                <dt>Last success</dt>
-                <dd>{notoolkit?.last_ok_at ? relative(notoolkit.last_ok_at) : 'never'}</dd>
-                {notoolkit?.last_error ? (
+                {enrichment.notoolkitEnabled ? (
                   <>
-                    <dt>Last error</dt>
-                    <dd style={{ color: 'var(--red)' }}>
-                      {notoolkit.last_error}
-                      <div className="faint">{dateTime(notoolkit.last_error_at)}</div>
+                    <dt>ASNs pending detail</dt>
+                    <dd>{num(enrichment.asnPending ?? 0)} awaiting their one-off registry lookup</dd>
+                    <dt>Calls</dt>
+                    <dd>{num(notoolkit?.calls ?? 0)} ({num(notoolkit?.failures ?? 0)} failed)</dd>
+                    <dt>Last success</dt>
+                    <dd>{notoolkit?.last_ok_at ? relative(notoolkit.last_ok_at) : 'never'}</dd>
+                    {notoolkit?.last_error ? (
+                      <>
+                        <dt>Last error</dt>
+                        <dd style={{ color: 'var(--red)' }}>
+                          {notoolkit.last_error}
+                          <div className="faint">{dateTime(notoolkit.last_error_at)}</div>
+                        </dd>
+                      </>
+                    ) : null}
+                  </>
+                ) : (
+                  <>
+                    {/* Past calls and errors are left out: they describe a
+                        service that is no longer in use. */}
+                    <dt>Status</dt>
+                    <dd>
+                      Switched off (NOTOOLKIT_ENABLED=false). No addresses are sent anywhere; network
+                      data comes from the MaxMind ASN database, when it is loaded.
                     </dd>
                   </>
-                ) : null}
+                )}
               </dl>
             </div>
 

@@ -34,7 +34,7 @@ const TITLES = [
 ];
 
 /** Optional parts of the interface; the server says which are switched on. */
-const DEFAULT_FEATURES = { caddy: true };
+const DEFAULT_FEATURES = { caddy: true, notoolkit: true };
 
 export default function App() {
   const [auth, setAuth] = useState({ state: 'checking', username: null, features: DEFAULT_FEATURES });

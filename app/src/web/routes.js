@@ -309,7 +309,9 @@ function buildWarnings(enrichment, providers) {
       message: 'GeoLite2 country database not loaded — country data is unavailable.',
     });
   }
-  if (enrichment.queueDepth > 5000) {
+  // The queue only exists to retry notoolkit lookups; with them switched off
+  // it is emptied at startup and never refilled, so there is nothing to report.
+  if (config.notoolkit.enabled && enrichment.queueDepth > 5000) {
     out.push({
       level: 'warn',
       source: 'enrichment',

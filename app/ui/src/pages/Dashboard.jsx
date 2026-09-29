@@ -155,7 +155,11 @@ export default function Dashboard({ ctx }) {
                   </tbody>
                 </table>
               ) : (
-                <Empty>No ASN data. Check notoolkit configuration on the Health page.</Empty>
+                <Empty>
+                  {ctx.features?.notoolkit
+                    ? 'No ASN data. Check notoolkit configuration on the Health page.'
+                    : 'No ASN data. With notoolkit switched off, networks come from the MaxMind ASN database — check the Health page.'}
+                </Empty>
               )}
             </Panel>
             <Panel title="Browsers" flush>

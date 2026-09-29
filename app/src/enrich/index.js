@@ -279,6 +279,9 @@ export async function resolveMany(ips, timeoutMs = config.enrich.inlineTimeoutMs
   await Promise.race([Promise.all(workers), new Promise((r) => setTimeout(r, timeoutMs))]);
 
   // Anything still unresolved goes on the queue for the background worker.
+  // Without notoolkit there is nothing to retry: the local answer seeded
+  // above is all there will ever be, and the next sighting resolves it again.
+  if (!config.notoolkit.enabled) return out;
   const s = prep();
   for (const ip of queue) s.enqueue.run(ip, Date.now());
   return out;
@@ -359,6 +362,18 @@ async function fillAsnDetail() {
 
 export function startEnrichWorker() {
   if (workerTimer) return;
+  if (!config.notoolkit.enabled) {
+    // Both jobs below are notoolkit retries and lookups. Drop whatever was
+    // queued while it was switched on: without it those addresses can only
+    // get the local (MaxMind) answer, which they already have.
+    try {
+      const { changes } = getDb().prepare('DELETE FROM ip_queue').run();
+      if (changes) log.info('notoolkit disabled; cleared the enrichment queue', { dropped: changes });
+    } catch (err) {
+      log.error('could not clear the enrichment queue', { err: String(err) });
+    }
+    return;
+  }
   const tick = async () => {
     try {
       await drainIpQueue();
