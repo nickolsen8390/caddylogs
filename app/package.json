@@ -1,6 +1,6 @@
 {
   "name": "caddy-log-interface",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Dashboard for Caddy's access logs, with Caddyfile management and zero-downtime reloads",
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/nickolsen8390/caddylogs" },

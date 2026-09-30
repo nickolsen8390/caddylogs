@@ -12,6 +12,7 @@
 
 import { getDb } from './db.js';
 import { config } from './config.js';
+import { isPrivateIp } from './util/net.js';
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
@@ -707,7 +708,14 @@ export function eventById(id) {
 /** Everything known about one source address. */
 export function ipDetail(ip, fromMs, toMs, host = null) {
   const db = getDb();
-  const info = db.prepare('SELECT * FROM ip_info WHERE ip = ?').get(ip) ?? null;
+  // Private addresses are never looked up or stored (enrich/index.js), so
+  // they have no row; describe them the way ingest does rather than as
+  // "not looked up yet".
+  const info =
+    db.prepare('SELECT * FROM ip_info WHERE ip = ?').get(ip) ??
+    (isPrivateIp(ip)
+      ? { ip, country: 'ZZ', country_name: 'Private network', source: 'private', updated_at: null }
+      : null);
 
   const totals = db
     .prepare(

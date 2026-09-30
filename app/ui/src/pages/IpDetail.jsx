@@ -33,6 +33,7 @@ export default function IpDetail({ ctx }) {
   const info = data.info ?? {};
   const live = data.live ?? {};
   const ctxLinks = { host, range };
+  const lookups = ctx?.features?.notoolkit !== false;
 
   return (
     <>
@@ -48,50 +49,60 @@ export default function IpDetail({ ctx }) {
         </div>
       </div>
 
-      {/* ------------------------------------------------ enrichment ----- */}
-      <Panel title="Network" style={{ marginBottom: 14 }}>
-        {info.ip ? (
-          <div className="hstack" style={{ gap: 8, flexWrap: 'wrap' }}>
-            {info.country && (
-              <Chip title="Where the client is, per MaxMind GeoLite2">
-                {flag(info.country)} {info.country_name ?? countryName(info.country)}
-              </Chip>
-            )}
-            {info.asn ? (
-              <Link to={drillTo('asn', info.asn, ctxLinks)} style={{ textDecoration: 'none' }}>
-                <Chip tone="info">
-                  AS{info.asn} {info.as_org ?? info.as_name ?? ''}
+      {/* ------------------------------------------------ enrichment -----
+          With notoolkit lookups switched off there is no lookup status to
+          report, so the card only appears when MaxMind supplied a country or
+          network for this address. */}
+      {(lookups || (info.source !== 'private' && (info.country || info.asn))) && (
+        <Panel title="Network" style={{ marginBottom: 14 }}>
+          {info.source === 'private' ? (
+            <div className="hstack" style={{ gap: 8, flexWrap: 'wrap' }}>
+              <Chip>Private network</Chip>
+              <span className="faint" style={{ fontSize: 11 }}>
+                Private and local addresses are never looked up.
+              </span>
+            </div>
+          ) : info.ip ? (
+            <div className="hstack" style={{ gap: 8, flexWrap: 'wrap' }}>
+              {info.country && (
+                <Chip title="Where the client is, per MaxMind GeoLite2">
+                  {flag(info.country)} {info.country_name ?? countryName(info.country)}
                 </Chip>
-              </Link>
-            ) : (
-              <Chip tone="warn">no ASN resolved</Chip>
-            )}
-            {info.as_prefix && <Chip title="Longest-matching BGP prefix">{info.as_prefix}</Chip>}
-            {info.as_rir && <Chip>{info.as_rir}</Chip>}
-            {info.as_country && (
-              <Chip title="Where the autonomous system is registered — not where the traffic came from">
-                AS registered in {flag(info.as_country)} {info.as_country}
-              </Chip>
-            )}
-            <Chip title="Which source supplied this record">{info.source ?? 'unresolved'}</Chip>
-            {info.error && <Chip tone="bad" title={info.error}>last lookup failed</Chip>}
-            <span className="faint" style={{ fontSize: 11 }}>
-              resolved {relative(info.updated_at)}
-            </span>
-          </div>
-        ) : (
-          <Empty>
-            {ctx.features?.notoolkit ? (
-              <>
-                This address has not been enriched yet. It is queued — check the{' '}
-                <Link to="/health">Health</Link> page if the queue is not draining.
-              </>
-            ) : (
-              'This address has not been looked up yet. It will be the next time it makes a request.'
-            )}
-          </Empty>
-        )}
-      </Panel>
+              )}
+              {info.asn ? (
+                <Link to={drillTo('asn', info.asn, ctxLinks)} style={{ textDecoration: 'none' }}>
+                  <Chip tone="info">
+                    AS{info.asn} {info.as_org ?? info.as_name ?? ''}
+                  </Chip>
+                </Link>
+              ) : lookups ? (
+                <Chip tone="warn">no ASN resolved</Chip>
+              ) : null}
+              {info.as_prefix && <Chip title="Longest-matching BGP prefix">{info.as_prefix}</Chip>}
+              {info.as_rir && <Chip>{info.as_rir}</Chip>}
+              {info.as_country && (
+                <Chip title="Where the autonomous system is registered — not where the traffic came from">
+                  AS registered in {flag(info.as_country)} {info.as_country}
+                </Chip>
+              )}
+              {lookups && (
+                <>
+                  <Chip title="Which source supplied this record">{info.source ?? 'unresolved'}</Chip>
+                  {info.error && <Chip tone="bad" title={info.error}>last lookup failed</Chip>}
+                  <span className="faint" style={{ fontSize: 11 }}>
+                    resolved {relative(info.updated_at)}
+                  </span>
+                </>
+              )}
+            </div>
+          ) : (
+            <Empty>
+              This address has not been enriched yet. It is queued — check the{' '}
+              <Link to="/health">Health</Link> page if the queue is not draining.
+            </Empty>
+          )}
+        </Panel>
+      )}
 
       {/* ------------------------------------------------ counters ------- */}
       <div className="grid stats" style={{ marginBottom: 14 }}>

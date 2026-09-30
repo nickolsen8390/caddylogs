@@ -4,6 +4,16 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org): a new major version (2.0.0) is the
 only kind that can require you to change anything when upgrading.
 
+## [1.0.3] — 2026-09-29
+
+### Fixed
+
+- With notoolkit switched off, an address's page no longer shows a "not
+  looked up yet" card. The Network card appears only when MaxMind has a
+  country or network for the address, and then without lookup status.
+- Private and local addresses are shown as "Private network" instead of
+  "not enriched yet — it is queued"; they are never looked up.
+
 ## [1.0.2] — 2026-09-29
 
 ### Fixed
@@ -60,6 +70,7 @@ First public release.
   filesystem, no Linux capabilities and `no-new-privileges`.
 - Works on phones: slide-in menu, readable request lists, folding filters.
 
+[1.0.3]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.0.3
 [1.0.2]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.0.2
 [1.0.1]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.0.1
 [1.0.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.0.0
