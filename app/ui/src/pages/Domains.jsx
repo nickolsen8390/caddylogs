@@ -110,7 +110,7 @@ export default function Domains({ ctx }) {
                   <tr key={r.host}>
                     {/* On phones the host name is shown whole and pinned while
                         the numbers scroll sideways (styles.css, "phones"). */}
-                    <td className="cell-wide cell-sticky cell-full">
+                    <td className="cell-sticky cell-full">
                       <Link to={`/domains/${encodeURIComponent(r.host)}`} className="truncate" title={r.host}>
                         {r.host}
                       </Link>

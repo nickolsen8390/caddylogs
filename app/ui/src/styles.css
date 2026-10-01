@@ -194,6 +194,9 @@ table.data th.sortable { cursor: pointer; user-select: none; }
 table.data th.sortable:hover { color: var(--text); }
 .truncate { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cell-wide { max-width: 0; width: 100%; }
+/* A name shown whole — the domain list's host names. The column is exactly as
+   wide as its longest name, and the numbers share everything else. */
+table.data td.cell-full { width: 1%; }
 
 /* bar-in-row */
 .bar-cell { position: relative; }
@@ -761,15 +764,19 @@ body.nav-locked { overflow: hidden; }
   table.data td.cell-wide { min-width: 170px; }
   /* Columns that must stay whole — the domain list's host names. The column
      stays pinned on the left while the numbers scroll past it; a very long
-     name wraps rather than taking more than about half the screen. */
+     name wraps rather than taking more than about half the screen. Shorter
+     names keep the column only as wide as the longest of them. */
   table.data .cell-sticky {
     position: sticky; left: 0; z-index: 1;
     background: var(--panel); box-shadow: 1px 0 0 var(--border-soft);
   }
   table.data th.cell-sticky { z-index: 2; }
   table.data tbody tr:hover .cell-sticky { background: var(--panel-2); }
-  table.data td.cell-full { max-width: 55vw; width: auto; }
-  table.data td.cell-full .truncate { white-space: normal; overflow-wrap: anywhere; }
+  /* max-content keeps a name on one line while it fits in 55vw, so the column
+     cannot be squeezed into wrapping a name that would have fitted. */
+  table.data td.cell-full .truncate {
+    width: max-content; max-width: 55vw; white-space: normal; overflow-wrap: anywhere;
+  }
   .grid { gap: 10px; }
   .grid.stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .stat-value { font-size: 20px; }

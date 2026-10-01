@@ -4,6 +4,15 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org): a new major version (2.0.0) is the
 only kind that can require you to change anything when upgrading.
 
+## [1.1.1] — 2026-10-01
+
+### Changed
+
+- Domains page: the domain column is only as wide as the longest domain
+  name, and the other columns get the rest of the width. Names are never
+  cut off. On phones the column no longer has a fixed minimum width; a name
+  too long for half the screen still wraps.
+
 ## [1.1.0] — 2026-09-30
 
 ### Added
@@ -88,6 +97,7 @@ First public release.
   filesystem, no Linux capabilities and `no-new-privileges`.
 - Works on phones: slide-in menu, readable request lists, folding filters.
 
+[1.1.1]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.1.1
 [1.1.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.1.0
 [1.0.3]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.0.3
 [1.0.2]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.0.2
