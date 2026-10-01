@@ -1,12 +1,13 @@
 // Self-contained checks for the pure logic that is easy to get subtly wrong
-// and hard to notice: CIDR matching, IP normalisation, and log parsing.
-// Touches no database, no network, no log files.
+// and hard to notice: CIDR matching, IP normalisation, log parsing, and
+// reading the changelog. Touches no database, no network, no log files.
 //
 //   docker compose run --rm --no-deps app node src/tools/selftest.js
 
 import { cidrMatcher, isPrivateIp, normalizeIp, isIPv4 } from '../util/net.js';
 import { parseLine, latencyBucket, extensionOf, refererHost } from '../ingest/parser.js';
 import { parseUserAgent } from '../ingest/useragent.js';
+import { parseChangelog } from '../release.js';
 
 let failures = 0;
 let checks = 0;
@@ -161,6 +162,35 @@ group('Derived fields', () => {
   ok('googlebot is a bot', parseUserAgent('Googlebot/2.1 (+http://www.google.com/bot.html)').bot, 1);
   ok('firefox is not', parseUserAgent('Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0').bot, 0);
   ok('mobile device class', parseUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148').device, 'Mobile');
+});
+
+group('Changelog', () => {
+  const releases = parseChangelog(
+    [
+      '# Changelog',
+      '',
+      'Introduction, not part of any release.',
+      '',
+      '## [1.1.0] — 2026-09-30',
+      '',
+      '### Added',
+      '',
+      '- A thing.',
+      '',
+      '## [1.0.0] - 2026-09-27',
+      '',
+      'First release.',
+      '',
+      '[1.1.0]: https://example.com/v1.1.0',
+    ].join('\r\n')
+  );
+  ok('one entry per release heading', releases.map((r) => r.version), ['1.1.0', '1.0.0']);
+  ok('date after an em dash', releases[0].date, '2026-09-30');
+  ok('date after a hyphen', releases[1].date, '2026-09-27');
+  ok('notes run to the next heading', releases[0].notes, '### Added\n\n- A thing.');
+  ok('link definitions are not notes', releases[1].notes, 'First release.');
+  ok('link definition gives the URL', releases[0].url, 'https://example.com/v1.1.0');
+  ok('no URL without a definition', releases[1].url, null);
 });
 
 // ---------------------------------------------------------------------------

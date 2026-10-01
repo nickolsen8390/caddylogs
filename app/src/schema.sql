@@ -175,7 +175,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   last_seen  INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
   ip         TEXT,
-  ua         TEXT
+  ua         TEXT,
+  -- 1 when signed in with "keep me signed in": exempt from the idle timeout.
+  persistent INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_exp ON sessions(expires_at);
 

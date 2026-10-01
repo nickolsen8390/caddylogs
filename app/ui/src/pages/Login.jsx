@@ -98,9 +98,14 @@ function InsecureContextHelp({ reason, observed }) {
   );
 }
 
-export default function Login({ onSuccess }) {
+/**
+ * @param {object} p
+ * @param {number} [p.rememberDays] lifetime of a "keep me signed in" session; 0 hides the option
+ */
+export default function Login({ onSuccess, rememberDays = 0 }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [remember, setRemember] = useState(false);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [insecure, setInsecure] = useState(null);
@@ -111,7 +116,11 @@ export default function Login({ onSuccess }) {
     setBusy(true);
     setError(null);
     try {
-      const res = await api.post('/api/auth/login', { username, password });
+      const res = await api.post('/api/auth/login', {
+        username,
+        password,
+        remember: rememberDays > 0 && remember,
+      });
       onSuccess(res);
     } catch (err) {
       const code = err instanceof ApiError ? err.code : null;
@@ -170,6 +179,23 @@ export default function Login({ onSuccess }) {
             onChange={(e) => setPassword(e.target.value)}
           />
         </div>
+
+        {rememberDays > 0 && (
+          <div className="field">
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={remember}
+                onChange={(e) => setRemember(e.target.checked)}
+              />
+              Keep me signed in
+            </label>
+            <span className="field-hint faint">
+              Stay signed in for {rememberDays === 1 ? '1 day' : `${rememberDays} days`}, even when
+              idle. Don’t use this on a shared computer.
+            </span>
+          </div>
+        )}
 
         <button className="btn primary" type="submit" disabled={busy} style={{ width: '100%', justifyContent: 'center', marginTop: 6 }}>
           {busy ? 'Signing in…' : 'Sign in'}

@@ -94,6 +94,13 @@ function migrate(db) {
     log.info('migration: added events.referer_host');
   }
 
+  if (!columns('sessions').has('persistent')) {
+    // "Keep me signed in". Existing sessions keep the idle timeout they were
+    // created under.
+    db.exec('ALTER TABLE sessions ADD COLUMN persistent INTEGER NOT NULL DEFAULT 0');
+    log.info('migration: added sessions.persistent');
+  }
+
   // Indexes for the request explorer's filters. Created here rather than in
   // schema.sql so they also land on databases that predate them.
   db.exec(`

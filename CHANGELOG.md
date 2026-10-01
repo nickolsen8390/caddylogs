@@ -4,6 +4,24 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org): a new major version (2.0.0) is the
 only kind that can require you to change anything when upgrading.
 
+## [1.1.0] — 2026-09-30
+
+### Added
+
+- The Health page shows the version that is running and what changed in it,
+  with the notes for earlier releases folded away underneath. They are the
+  same notes as on GitHub, built into the image from this file.
+- "Keep me signed in" on the sign-in page. A session started with it ticked
+  is not ended by inactivity, and lasts 30 days instead of the usual 12 hours.
+  Change the 30 with `SESSION_REMEMBER_DAYS`, or set it to `0` to remove the
+  option. Without the tick, sign-in works as before.
+
+### Changed
+
+- The image is now built from the repository root, so it can include the
+  changelog. To build it yourself:
+  `docker build -t caddylogs:local -f app/Dockerfile .`
+
 ## [1.0.3] — 2026-09-29
 
 ### Fixed
@@ -70,6 +88,7 @@ First public release.
   filesystem, no Linux capabilities and `no-new-privileges`.
 - Works on phones: slide-in menu, readable request lists, folding filters.
 
+[1.1.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.1.0
 [1.0.3]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.0.3
 [1.0.2]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.0.2
 [1.0.1]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.0.1

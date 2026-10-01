@@ -267,6 +267,7 @@ html[data-theme='light'] .bar-fill { background: color-mix(in srgb, var(--accent
 .login-card { width: 100%; max-width: 360px; padding: 26px; }
 .login-card h1 { margin: 0 0 4px; font-size: 17px; letter-spacing: -0.01em; }
 .login-card p.sub { margin: 0 0 20px; color: var(--text-dim); font-size: 12.5px; }
+.login-card .field label.check { align-self: flex-start; font-size: 12.5px; font-weight: 500; color: var(--text); }
 .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 13px; }
 .field label { font-size: 11.5px; font-weight: 600; color: var(--text-dim); }
 .field .input { width: 100%; }
@@ -650,6 +651,15 @@ code {
 .f-group[open] > summary::before { content: '▾'; }
 .f-group[open] > summary { border-bottom: 1px solid var(--border-soft); }
 .f-group-body { padding: 12px; }
+
+/* Release notes from CHANGELOG.md, on the Health page. */
+.release-notes { font-size: 12.5px; color: var(--text-dim); }
+.release-notes h3 { margin: 12px 0 4px; font-size: 12px; font-weight: 620; color: var(--text); }
+.release-notes h3:first-child { margin-top: 0; }
+.release-notes p { margin: 0 0 6px; }
+.release-notes ul { margin: 0 0 6px; padding-left: 18px; }
+.release-notes li { margin-bottom: 4px; }
+.release-head { font-weight: 620; font-size: 12.5px; margin-bottom: 6px; }
 
 .mode-cards { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
 .mode-card {

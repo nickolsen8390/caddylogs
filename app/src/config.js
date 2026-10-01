@@ -37,6 +37,9 @@ export const config = {
     users: env.AUTH_USERS || '',
     ttlHours: int(env.SESSION_TTL_HOURS, 12),
     idleMinutes: int(env.SESSION_IDLE_MINUTES, 120),
+    // "Keep me signed in": such a session has no idle timeout and lasts this
+    // many days. 0 removes the option from the sign-in page.
+    rememberDays: Math.max(0, int(env.SESSION_REMEMBER_DAYS, 30)),
     trustProxy: bool(env.TRUST_PROXY, true),
     trustedProxies: list(env.TRUSTED_PROXIES).length
       ? list(env.TRUSTED_PROXIES)

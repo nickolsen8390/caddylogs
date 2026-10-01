@@ -23,6 +23,9 @@ const log = logger('web');
 /** Optional parts of the interface, so the UI can leave out what is switched off. */
 const features = () => ({ caddy: config.caddy.enabled, notoolkit: config.notoolkit.enabled });
 
+/** What the sign-in page offers (0 days: no "keep me signed in"). Public. */
+const loginOptions = () => ({ rememberDays: config.auth.rememberDays });
+
 /** Operator-facing next step for each way the secure-context check can fail. */
 const INSECURE_HINTS = {
   forwarded_proto_not_https:
@@ -150,6 +153,7 @@ export async function buildServer() {
           properties: {
             username: { type: 'string', minLength: 1, maxLength: 100 },
             password: { type: 'string', minLength: 1, maxLength: 512 },
+            remember: { type: 'boolean' },
           },
         },
       },
@@ -198,10 +202,15 @@ export async function buildServer() {
         }
       }
 
-      const { token, csrf } = createSession(username, ip, req.headers['user-agent']);
-      reply.setCookie(COOKIE_NAME, token, cookieOptions());
-      log.info('login', { ip, username });
-      return { username, csrf, features: features() };
+      const { token, csrf, persistent } = createSession(
+        username,
+        ip,
+        req.headers['user-agent'],
+        req.body.remember === true
+      );
+      reply.setCookie(COOKIE_NAME, token, cookieOptions(persistent));
+      log.info('login', { ip, username, remember: persistent });
+      return { username, csrf, features: features(), login: loginOptions() };
     }
   );
 
@@ -212,8 +221,14 @@ export async function buildServer() {
   });
 
   app.get('/api/auth/me', async (req) => {
-    if (!req.session) return { authenticated: false };
-    return { authenticated: true, username: req.session.username, csrf: req.session.csrf, features: features() };
+    if (!req.session) return { authenticated: false, login: loginOptions() };
+    return {
+      authenticated: true,
+      username: req.session.username,
+      csrf: req.session.csrf,
+      features: features(),
+      login: loginOptions(),
+    };
   });
 
   // -------------------------------------------------------------------------

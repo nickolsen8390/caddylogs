@@ -433,6 +433,11 @@ The interface is built on the assumption it may be internet-facing.
   live sessions. Sessions are looked up server-side, so there is no signing
   secret to configure or leak. (Older versions required `SESSION_SECRET`; it
   is now ignored and can be deleted from `.env`.)
+- Sessions end after `SESSION_IDLE_MINUTES` without use, or `SESSION_TTL_HOURS`
+  after sign-in. Ticking **Keep me signed in** exempts that session from the
+  idle timeout and makes it last `SESSION_REMEMBER_DAYS` (default 30) instead;
+  set it to `0` to remove the option. Signing out ends the session at once
+  either way.
 - Passwords are verified with scrypt and a constant-time comparison. Unknown
   usernames cost the same as known ones, so accounts cannot be enumerated.
 - Failed logins are throttled per source IP (`LOGIN_MAX_ATTEMPTS` per
@@ -477,6 +482,7 @@ likely to change:
 | `CADDY_MANAGE` | `true` | `false` hides the Caddy menu and turns the configuration API off |
 | `CADDY_LOG_GLOB` | `*.log` | which files to follow |
 | `AUTH_USERS` | — | `user:password` or `user:scrypt$…`, comma-separated |
+| `SESSION_REMEMBER_DAYS` | `30` | lifetime of a "keep me signed in" session, which has no idle timeout; `0` removes the option |
 | `RETENTION_DAYS` | `365` | how long statistics are kept |
 | `HOURLY_RETENTION_DAYS` | `45` | how long hour-level detail is kept |
 | `RAW_RETENTION_HOURS` | `48` | how long individual requests are kept |
@@ -624,12 +630,14 @@ git push origin v1.0.1
 The workflow builds for amd64 and arm64, pushes `1.0.1`, `1.0`, `1` and
 `latest` to Docker Hub with provenance and SBOM attestations, and refreshes the
 Docker Hub description from `DOCKERHUB.md`. Before tagging, bump `version` in
-`app/package.json` and add the release to `CHANGELOG.md`.
+`app/package.json` and add the release to `CHANGELOG.md`. The changelog is
+built into the image: the Health page shows the running version with its
+release notes, and the earlier releases below them.
 
 To run a locally built image instead, build it and point `APP_IMAGE` at it:
 
 ```bash
-docker build -t caddylogs:local ./app
+docker build -t caddylogs:local -f app/Dockerfile .
 ```
 
 Then set `APP_IMAGE=caddylogs:local` in `.env` and run `docker compose up -d`.

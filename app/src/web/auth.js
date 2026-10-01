@@ -171,8 +171,8 @@ function prep() {
   const db = getDb();
   stmts = {
     create: db.prepare(
-      `INSERT INTO sessions (id, username, csrf, created_at, last_seen, expires_at, ip, ua)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO sessions (id, username, csrf, created_at, last_seen, expires_at, ip, ua, persistent)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ),
     get: db.prepare('SELECT * FROM sessions WHERE id = ?'),
     touch: db.prepare('UPDATE sessions SET last_seen = ? WHERE id = ?'),
@@ -191,7 +191,24 @@ function prep() {
 // over live sessions.
 const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
 
-export function createSession(username, ip, ua) {
+/** Whether "keep me signed in" is offered (SESSION_REMEMBER_DAYS > 0). */
+const rememberAllowed = () => config.auth.rememberDays > 0;
+
+/**
+ * Lifetime of a new session in seconds. A remembered session lasts
+ * SESSION_REMEMBER_DAYS, but never less than an ordinary one.
+ */
+function lifetimeSeconds(remember) {
+  const normal = config.auth.ttlHours * 3600;
+  return remember ? Math.max(normal, config.auth.rememberDays * 86400) : normal;
+}
+
+/**
+ * @param {boolean} [remember] "keep me signed in": no idle timeout, and the
+ *   longer SESSION_REMEMBER_DAYS lifetime. Ignored when the option is off.
+ */
+export function createSession(username, ip, ua, remember = false) {
+  const persistent = Boolean(remember) && rememberAllowed();
   const token = crypto.randomBytes(32).toString('base64url');
   const csrf = crypto.randomBytes(32).toString('base64url');
   const now = Date.now();
@@ -201,11 +218,12 @@ export function createSession(username, ip, ua) {
     csrf,
     now,
     now,
-    now + config.auth.ttlHours * 3_600_000,
+    now + lifetimeSeconds(persistent) * 1000,
     ip ?? null,
-    (ua ?? '').slice(0, 300)
+    (ua ?? '').slice(0, 300),
+    persistent ? 1 : 0
   );
-  return { token, csrf };
+  return { token, csrf, persistent };
 }
 
 export function readSession(token) {
@@ -217,7 +235,11 @@ export function readSession(token) {
     prep().destroy.run(row.id);
     return null;
   }
-  if (config.auth.idleMinutes > 0 && now - row.last_seen > config.auth.idleMinutes * 60_000) {
+  if (
+    config.auth.idleMinutes > 0 &&
+    !row.persistent &&
+    now - row.last_seen > config.auth.idleMinutes * 60_000
+  ) {
     prep().destroy.run(row.id);
     return null;
   }
@@ -246,12 +268,12 @@ export function isLockedOut(ip) {
   return n >= config.auth.maxAttempts;
 }
 
-export function cookieOptions() {
+export function cookieOptions(persistent = false) {
   return {
     httpOnly: true,
     secure: config.auth.cookieSecure,
     sameSite: 'strict',
     path: '/',
-    maxAge: config.auth.ttlHours * 3600,
+    maxAge: lifetimeSeconds(persistent),
   };
 }

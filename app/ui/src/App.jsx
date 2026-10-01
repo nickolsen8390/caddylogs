@@ -37,7 +37,9 @@ const TITLES = [
 const DEFAULT_FEATURES = { caddy: true, notoolkit: true };
 
 export default function App() {
-  const [auth, setAuth] = useState({ state: 'checking', username: null, features: DEFAULT_FEATURES });
+  // `rememberDays` is what the sign-in page offers; the server reports it with
+  // every /api/auth/me so it is known even after a session runs out.
+  const [auth, setAuth] = useState({ state: 'checking', username: null, features: DEFAULT_FEATURES, rememberDays: 0 });
   // Slide-in navigation on narrow screens; ignored where the sidebar is fixed.
   const [navOpen, setNavOpen] = useState(false);
   const [theme, setTheme] = useLocalState('cli.theme', 'dark');
@@ -51,11 +53,17 @@ export default function App() {
   const check = useCallback(async () => {
     try {
       const me = await api.get('/api/auth/me');
+      const rememberDays = me?.login?.rememberDays ?? 0;
       if (me?.authenticated) {
         setCsrf(me.csrf);
-        setAuth({ state: 'in', username: me.username, features: { ...DEFAULT_FEATURES, ...me.features } });
+        setAuth({
+          state: 'in',
+          username: me.username,
+          features: { ...DEFAULT_FEATURES, ...me.features },
+          rememberDays,
+        });
       } else {
-        setAuth((a) => ({ ...a, state: 'out', username: null }));
+        setAuth((a) => ({ ...a, state: 'out', username: null, rememberDays }));
       }
     } catch {
       setAuth((a) => ({ ...a, state: 'out', username: null }));
@@ -112,9 +120,15 @@ export default function App() {
   if (auth.state === 'out') {
     return (
       <Login
+        rememberDays={auth.rememberDays}
         onSuccess={(res) => {
           setCsrf(res.csrf);
-          setAuth({ state: 'in', username: res.username, features: { ...DEFAULT_FEATURES, ...res.features } });
+          setAuth({
+            state: 'in',
+            username: res.username,
+            features: { ...DEFAULT_FEATURES, ...res.features },
+            rememberDays: res.login?.rememberDays ?? 0,
+          });
         }}
       />
     );

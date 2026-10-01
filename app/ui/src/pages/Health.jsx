@@ -1,11 +1,66 @@
 import { useApi } from '../lib/useApi.js';
 import { Banner, Chip, Empty, Loading, Panel, Stat } from '../components/ui.jsx';
+import ReleaseNotes from '../components/ReleaseNotes.jsx';
 import { compact, dateTime, num, pct, relative } from '../lib/format.js';
+
+/** The running version's notes from CHANGELOG.md, with earlier releases folded away. */
+function Releases({ about }) {
+  const { version, releases } = about;
+  const current = releases.find((r) => r.version === version);
+  const earlier = releases.filter((r) => r !== current);
+
+  const heading = (r) => (
+    <>
+      {r.version}
+      {r.date && <span className="faint" style={{ fontWeight: 400 }}> · {r.date}</span>}
+    </>
+  );
+
+  return (
+    <Panel
+      title={current ? `What's new in ${version}` : 'Release notes'}
+      actions={current?.url && (
+        <a href={current.url} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>On GitHub</a>
+      )}
+    >
+      {current ? (
+        <>
+          {current.date && <div className="faint" style={{ fontSize: 11.5, marginBottom: 8 }}>Released {current.date}</div>}
+          <ReleaseNotes notes={current.notes} />
+        </>
+      ) : (
+        <p className="dim" style={{ marginTop: 0 }}>
+          {releases.length
+            ? `Version ${version} has no entry in the changelog.`
+            : 'The changelog is not available in this build.'}
+        </p>
+      )}
+
+      {earlier.length > 0 && (
+        <details className="f-group" style={{ marginTop: 14 }}>
+          <summary>Earlier releases</summary>
+          <div className="f-group-body vstack" style={{ gap: 16 }}>
+            {earlier.map((r) => (
+              <div key={r.version}>
+                <div className="release-head">
+                  {r.url ? <a href={r.url} target="_blank" rel="noreferrer">{heading(r)}</a> : heading(r)}
+                </div>
+                <ReleaseNotes notes={r.notes} />
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+    </Panel>
+  );
+}
 
 export default function Health({ ctx }) {
   const { onUnauthorized } = ctx;
   const { data, loading } = useApi('/api/health', { refreshMs: 20_000, onUnauthorized });
   const meta = useApi('/api/meta', { refreshMs: 60_000, onUnauthorized });
+  // Fixed until the container is upgraded, so fetched once.
+  const about = useApi('/api/about', { onUnauthorized });
 
   if (!data) return <Panel><Loading rows={6} /></Panel>;
 
@@ -19,6 +74,8 @@ export default function Health({ ctx }) {
       <div className="hstack" style={{ marginBottom: 14 }}>
         {loading && <span className="spinner" />}
         <span className="faint" style={{ fontSize: 11.5 }}>Refreshing every 20s</span>
+        <span className="spacer" style={{ flex: 1 }} />
+        {about.data && <Chip title="Running version">v{about.data.version}</Chip>}
       </div>
 
       {warnings?.length ? (
@@ -189,6 +246,12 @@ export default function Health({ ctx }) {
           <Empty>No ingest activity recorded yet.</Empty>
         )}
       </Panel>
+
+      {about.data && (
+        <div style={{ marginTop: 14 }}>
+          <Releases about={about.data} />
+        </div>
+      )}
     </>
   );
 }

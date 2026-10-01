@@ -1,0 +1,13 @@
+# The image is built with the repository root as its context (see
+# app/Dockerfile), so send only what it uses: the app and the changelog.
+# Everything else here, including Caddy's data and the stats database when
+# they live in this checkout, stays out of the build.
+*
+!CHANGELOG.md
+!app/
+app/node_modules
+app/ui/node_modules
+app/ui/dist
+app/public
+app/data
+**/*.log

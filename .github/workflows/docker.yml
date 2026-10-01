@@ -71,7 +71,8 @@ jobs:
       - name: Build, and push if this is a release
         uses: docker/build-push-action@v7
         with:
-          context: ./app
+          context: .
+          file: ./app/Dockerfile
           platforms: ${{ env.RELEASE == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           push: ${{ env.RELEASE == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}

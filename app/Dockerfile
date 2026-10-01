@@ -3,17 +3,20 @@
 #
 # Releases are built and pushed by .github/workflows/docker.yml when a version
 # tag (v1.2.3) is pushed. To build locally, from the repository root:
-#   docker build -t caddylogs:local ./app
+#   docker build -t caddylogs:local -f app/Dockerfile .
+#
+# The context is the repository root so CHANGELOG.md, shown on the Health
+# page, can be copied in; .dockerignore there limits what is sent.
 #
 # Lockfiles (package-lock.json) are used when present, for reproducible builds.
 
 # ---------- stage 1: build the React UI ----------
 FROM node:22-bookworm-slim AS ui
 WORKDIR /ui
-COPY ui/package*.json ./
+COPY app/ui/package*.json ./
 RUN if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; \
     else npm install --no-audit --no-fund; fi
-COPY ui/ ./
+COPY app/ui/ ./
 RUN npm run build
 
 # ---------- stage 2: build native server deps ----------
@@ -22,7 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 make g++ ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY package*.json ./
+COPY app/package*.json ./
 RUN if [ -f package-lock.json ]; then npm ci --omit=dev --no-audit --no-fund; \
     else npm install --omit=dev --no-audit --no-fund; fi
 
@@ -59,8 +62,8 @@ ENV NODE_ENV=production \
 
 WORKDIR /app
 COPY --from=deps  /app/node_modules ./node_modules
-COPY package.json ./
-COPY src/ ./src/
+COPY app/package.json CHANGELOG.md ./
+COPY app/src/ ./src/
 COPY --from=ui /ui/dist ./public
 
 # Default UID 1000. Override with --user (compose: user: PUID:PGID) to match

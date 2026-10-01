@@ -4,6 +4,7 @@ import * as Q from '../queries.js';
 import { config } from '../config.js';
 import { enrichmentStatus } from '../enrich/index.js';
 import { readProviderHealth } from '../enrich/health.js';
+import { releaseInfo } from '../release.js';
 import { hub, makeFilter } from './stream.js';
 import { logger } from '../util/log.js';
 
@@ -282,6 +283,10 @@ export async function registerApi(app) {
       warnings: buildWarnings(enrichment, providers),
     };
   });
+
+  // The running version and the release notes behind it. Fixed for the life
+  // of the process, so read once.
+  app.get('/api/about', rl, async () => releaseInfo());
 
   log.info('api routes registered');
 }
