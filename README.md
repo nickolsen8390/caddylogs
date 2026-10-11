@@ -39,7 +39,7 @@ Security reports: see [SECURITY.md](SECURITY.md)
 > **Outbound lookups — on by default, one setting to turn off.** To show which
 > network each visitor belongs to (BGP prefix, AS number and name, registry,
 > WHOIS), the app sends each **public visitor IP address** to the free
-> [notoolkit.com](https://notoolkit.com) API — once per address, then cached
+> [notoolkit](https://api.notoolkit.com/) API (`api.notoolkit.com`) — once per address, then cached
 > locally — along with AS numbers for registry detail. No URLs, user agents,
 > hostnames or other log content are sent, and private, loopback and
 > link-local addresses never are. Set `NOTOOLKIT_ENABLED=false` in `.env` to
@@ -53,7 +53,7 @@ Security reports: see [SECURITY.md](SECURITY.md)
 - Docker with the Compose plugin
 - Nothing else listening on ports 80/443 — the stack runs Caddy (2.8 or newer)
 - A MaxMind GeoLite2 country database for visitor-country data (free, see below)
-- Outbound HTTPS to notoolkit.com for BGP prefix / ASN data (no key required;
+- Outbound HTTPS to api.notoolkit.com for BGP prefix / ASN data (no key required;
   optional — see above)
 
 ## 2. Install
@@ -375,8 +375,8 @@ starts cleanly at zero. Truncation in place is detected and restarts that file.
 
 ### What is sent, and how to turn it off
 
-notoolkit.com lookups are **on by default** and are the only outbound
-connections the app makes. They send:
+notoolkit lookups, to `api.notoolkit.com`, are **on by default** and are the
+only outbound connections the app makes. They send:
 
 - each **public** visitor IP address, once — the answer is cached in the local
   database for `ENRICH_TTL_DAYS` (30 by default) before it is asked again;
@@ -408,8 +408,8 @@ and WHOIS detail. Anything already cached is kept.
 | Source | Provides | Failure behaviour |
 |---|---|---|
 | MaxMind GeoLite2 | **visitor country** (and ASN if the ASN db is present) | local, always available |
-| notoolkit.com `/?ip=` | BGP prefix, originating ASN, AS name/org | retried with backoff; **an error banner appears on the dashboard and Health page** |
-| notoolkit.com `/?asn=` | RIR, registrant country, description, WHOIS, prefix counts | one lookup per distinct ASN, filled in the background |
+| notoolkit `v1/ip/{address}` | BGP prefix, originating ASN, AS name/org | retried with backoff; **an error banner appears on the dashboard and Health page** |
+| notoolkit `v1/asn/{number}` | RIR, registrant country, description, WHOIS, prefix counts | one lookup per distinct ASN, filled in the background |
 
 **Two different countries.** MaxMind answers "where is this visitor" — that is
 what the world map and country breakdowns use. notoolkit's `country` is where
@@ -436,6 +436,7 @@ things:
 |---|---|
 | `404` no BGP prefix covers the address | a definitive answer. Cached as resolved-with-no-data, **not** retried in a loop, and **not** a health problem — unrouted and bogon space legitimately has no prefix. |
 | `400` invalid parameter | same: cached, not retried. |
+| `410` retired endpoint | a configuration problem: `NOTOOLKIT_API_URL` points at the pre-v1 API. Addresses stay queued and the banner names the URL to use. The old `https://notoolkit.com/` setting is translated to v1 automatically, so this only appears for other stale URLs. |
 | `503`, other 5xx, timeout, network error | transient. Retried with exponential backoff (1m → 1h, `NOTOOLKIT_MAX_RETRIES` attempts), provider marked unhealthy, banner shown. |
 
 Requests are rate-limited client-side to `NOTOOLKIT_RATE_PER_SEC` (default 10)
@@ -447,7 +448,7 @@ exist only so a key could be added later without a code change.
 
 ### When the API is on the same server
 
-If this stack monitors the very Caddy instance that serves notoolkit.com, the
+If this stack monitors the very Caddy instance that serves api.notoolkit.com, the
 container will usually fail to reach the public hostname while the host itself
 succeeds. That is **NAT hairpin**: the container resolves the public address,
 the packet leaves via the default route, and the firewall declines to loop it
@@ -460,8 +461,8 @@ directly and name the virtual host, so Caddy's own `reverse_proxy` target is
 reached over the LAN:
 
 ```bash
-NOTOOLKIT_API_URL=http://10.0.0.5/        # whatever your reverse_proxy targets
-NOTOOLKIT_HOST_HEADER=notoolkit.com       # so vhost routing still resolves
+NOTOOLKIT_API_URL=http://10.0.0.5/v1/     # whatever your reverse_proxy targets, plus /v1/
+NOTOOLKIT_HOST_HEADER=api.notoolkit.com   # so vhost routing still resolves
 ```
 
 Plain HTTP is appropriate here: it stays on the local network, and the payload

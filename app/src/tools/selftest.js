@@ -13,6 +13,8 @@ import {
 } from '../ingest/traffic.js';
 import { Accumulator, hourBucket } from '../ingest/rollup.js';
 import { visitorHash } from '../ingest/visits.js';
+import { notoolkitEndpoint } from '../config.js';
+import { describeRequest } from '../enrich/notoolkit.js';
 import { parseChangelog } from '../release.js';
 
 let failures = 0;
@@ -332,6 +334,34 @@ group('Visits', () => {
 
   ok('visitor id is stable', visitorHash('s', view(T0, '/')), visitorHash('s', view(T0 + MIN, '/a')));
   ok('and differs by salt', visitorHash('s', view(T0, '/')) === visitorHash('t', view(T0, '/')), false);
+});
+
+group('notoolkit API', () => {
+  const ep = (url, hostHeader) => {
+    const r = notoolkitEndpoint(url, hostHeader);
+    return [r.url, r.hostHeader, r.migrated];
+  };
+  ok('default is v1', ep(undefined, undefined), ['https://api.notoolkit.com/v1/', '', false]);
+  ok('v1 URL kept as given', ep('https://api.notoolkit.com/v1', ''), ['https://api.notoolkit.com/v1/', '', false]);
+  ok('retired root URL is translated', ep('https://notoolkit.com/', ''), ['https://api.notoolkit.com/v1/', '', true]);
+  ok('origin by address: path and Host header translated',
+    ep('http://10.0.0.5/', 'notoolkit.com'), ['http://10.0.0.5/v1/', 'api.notoolkit.com', true]);
+  ok('origin by address already on v1 is kept',
+    ep('http://10.0.0.5/v1/', 'api.notoolkit.com'), ['http://10.0.0.5/v1/', 'api.notoolkit.com', false]);
+
+  const ip4 = describeRequest('ip', '8.8.8.8').url;
+  const ip6 = describeRequest('ip', '2001:4860:4860::8888').url;
+  const asn = describeRequest('asn', 15169).url;
+  ok('IP lookup is a path', ip4.pathname.endsWith('/ip/8.8.8.8') && ip4.search === '', true);
+  ok('IPv6 keeps its colons', ip6.pathname.endsWith('/ip/2001:4860:4860::8888'), true);
+  ok('ASN lookup is a path', asn.pathname.endsWith('/asn/15169'), true);
+  let threw = false;
+  try {
+    describeRequest('ip', '../asn/1');
+  } catch {
+    threw = true;
+  }
+  ok('anything but an address is refused', threw, true);
 });
 
 group('Changelog', () => {

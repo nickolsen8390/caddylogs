@@ -4,6 +4,27 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org): a new major version (2.0.0) is the
 only kind that can require you to change anything when upgrading.
 
+## [1.2.2] — 2026-10-11
+
+### Fixed
+
+- Network lookups work again. notoolkit moved its API to
+  `https://api.notoolkit.com/v1/` and retired the old address, which now
+  answers `410 Gone`, so every lookup was failing and the dashboard showed a
+  notoolkit error banner. Lookups now use the v1 API. **No change to `.env`
+  is needed:** a `NOTOOLKIT_API_URL` of `https://notoolkit.com/` — the old
+  default, which `.env.example` spelled out — is translated to the new
+  address, and so is a same-server setup using `NOTOOLKIT_HOST_HEADER=notoolkit.com`.
+  A warning in the log says so until `.env` is updated.
+- If `NOTOOLKIT_API_URL` points at some other retired address, the error
+  banner now says so and names the URL to use, instead of reporting an
+  outage.
+
+### Changed
+
+- Outbound lookups now go to `api.notoolkit.com` instead of `notoolkit.com`.
+  If your firewall restricts outbound traffic by hostname, allow the new one.
+
 ## [1.2.1] — 2026-10-10
 
 ### Fixed
@@ -158,6 +179,7 @@ First public release.
   filesystem, no Linux capabilities and `no-new-privileges`.
 - Works on phones: slide-in menu, readable request lists, folding filters.
 
+[1.2.2]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.2.2
 [1.2.1]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.2.1
 [1.2.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.2.0
 [1.1.1]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.1.1

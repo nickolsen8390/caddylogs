@@ -6,7 +6,7 @@
 // locally and pushed onto ip_queue, which the background worker drains; the
 // cache is then warm for every subsequent request from that address.
 //
-// Separately, each distinct ASN gets ONE /?asn= lookup for registrant detail
+// Separately, each distinct ASN gets ONE asn/{number} lookup for registrant detail
 // (RIR, description, WHOIS, prefix counts). That set is bounded by the number
 // of networks that talk to the server, not by request volume.
 

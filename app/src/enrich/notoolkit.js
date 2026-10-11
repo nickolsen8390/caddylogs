@@ -1,12 +1,16 @@
-// notoolkit.com adapter — IP to BGP prefix + ASN, and ASN to registrant detail.
+// notoolkit API adapter — IP to BGP prefix + ASN, and ASN to registrant
+// detail. API v1, documented at https://api.notoolkit.com/:
 //
-//   GET https://notoolkit.com/?ip=8.8.8.8
+//   GET https://api.notoolkit.com/v1/ip/8.8.8.8
 //     -> { query, prefix, prefix_last_updated, asn, asn_name, org_name,
 //          country, description, rir, whois_raw, cache_hit }
 //
-//   GET https://notoolkit.com/?asn=15169
+//   GET https://api.notoolkit.com/v1/asn/15169
 //     -> { query, asn, asn_name, org_name, country, description, rir,
-//          whois_raw, prefix_count: { ipv4, ipv6 }, cache_hit }
+//          whois_raw, prefix_count: { ipv4, ipv6 }, aspa, cache_hit }
+//
+// The bodies are those of the retired root endpoints (notoolkit.com/?ip=…),
+// which now answer 410 Gone with a `use` field naming the v1 URL.
 //
 // `country` in both responses is the country of the AS *registrant*. It is not
 // where the request came from — visitor country comes from MaxMind. Keeping
@@ -16,11 +20,15 @@
 //   400 / 404  the provider answered definitively — no data for this input.
 //              Cached as "resolved, nothing found". Not a health problem, and
 //              never retried in a loop.
+//   410        the configured URL is a retired endpoint. Reported like an
+//              outage, naming the URL to use, so addresses stay queued and
+//              resolve once NOTOOLKIT_API_URL is corrected.
 //   503 / 5xx / network / timeout
 //              transient. Throws a retryable error, marks the provider
 //              unhealthy (which surfaces a banner in the UI), and leaves the
 //              address queued for backoff retry.
 
+import net from 'node:net';
 import { config } from '../config.js';
 import { logger } from '../util/log.js';
 import { recordProviderResult } from './health.js';
@@ -64,18 +72,31 @@ class RateLimiter {
 
 const limiter = new RateLimiter(config.notoolkit.ratePerSec);
 
-/**
- * One request against the API. `params` becomes the query string.
- * @returns {Promise<object|null>} the parsed body, or null when the provider
- *   answered but has no data (400/404).
- */
+if (config.notoolkit.enabled && config.notoolkit.migrated) {
+  log.warn('NOTOOLKIT_API_URL / NOTOOLKIT_HOST_HEADER name the retired notoolkit API; using v1 instead', {
+    configured: config.notoolkit.configuredUrl,
+    using: config.notoolkit.url,
+    hostHeader: config.notoolkit.hostHeader || undefined,
+    fix: 'update .env, see .env.example',
+  });
+}
+
 /**
  * Build the URL and headers for a lookup, without performing it. Exported so
  * the connectivity probe tests exactly what the enricher would send.
+ *
+ * @param {'ip'|'asn'} kind
+ * @param {string|number} value an IP address or an AS number; anything else
+ *   throws, as it would otherwise become part of the URL path.
  */
-export function describeRequest(params) {
-  const url = new URL(config.notoolkit.url);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
+export function describeRequest(kind, value) {
+  let segment;
+  if (kind === 'ip' && net.isIP(String(value))) segment = String(value);
+  else if (kind === 'asn' && /^\d+$/.test(String(value)) && Number(value) > 0) segment = String(value);
+  else throw new TypeError(`not a valid ${kind}: ${value}`);
+
+  // Colons in an IPv6 address are legal in a path and are left as they are.
+  const url = new URL(`${kind}/${segment}`, config.notoolkit.url);
 
   const headers = { Accept: 'application/json', 'User-Agent': 'caddy-log-interface/1.0' };
   // Talking to an origin by address while still naming the virtual host.
@@ -90,10 +111,15 @@ export function describeRequest(params) {
   return { url, headers };
 }
 
-async function call(params) {
+/**
+ * One lookup against the API.
+ * @returns {Promise<object|null>} the parsed body, or null when the provider
+ *   answered but has no data (400/404).
+ */
+async function call(kind, value) {
   await limiter.take();
 
-  const { url, headers } = describeRequest(params);
+  const { url, headers } = describeRequest(kind, value);
 
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), config.notoolkit.timeoutMs);
@@ -104,6 +130,15 @@ async function call(params) {
     if (res.status === 404 || res.status === 400) {
       recordProviderResult(NOTOOLKIT, true, null);
       return null;
+    }
+    if (res.status === 410) {
+      const body = await res.json().catch(() => null);
+      throw new ProviderUnavailable(
+        `${url.origin}${url.pathname} is a retired API endpoint (HTTP 410)` +
+          (body?.use ? `; the API now answers at ${body.use}` : '') +
+          '. Set NOTOOLKIT_API_URL to https://api.notoolkit.com/v1/ in .env.',
+        410
+      );
     }
     if (!res.ok) {
       const text = await res.text().catch(() => '');
@@ -122,7 +157,7 @@ async function call(params) {
         ? `timed out after ${config.notoolkit.timeoutMs}ms`
         : String(err?.message ?? err);
     recordProviderResult(NOTOOLKIT, false, message);
-    log.debug('lookup failed', { params, err: message });
+    log.debug('lookup failed', { kind, value, err: message });
     if (err instanceof ProviderUnavailable) throw err;
     throw new ProviderUnavailable(message);
   } finally {
@@ -147,7 +182,9 @@ function toAsnNumber(v) {
  */
 export async function lookupIp(ip) {
   if (!config.notoolkit.enabled) return null;
-  const body = await call({ ip });
+  // Not an address (a malformed log field): nothing the API could answer.
+  if (!net.isIP(String(ip))) return null;
+  const body = await call('ip', ip);
   if (!body) return null;
 
   const asn = toAsnNumber(body.asn);
@@ -171,7 +208,8 @@ export async function lookupIp(ip) {
  */
 export async function lookupAsnDetail(asn) {
   if (!config.notoolkit.enabled) return null;
-  const body = await call({ asn: String(asn) });
+  if (!(Number.isInteger(Number(asn)) && Number(asn) > 0)) return null;
+  const body = await call('asn', Number(asn));
   if (!body) return null;
 
   const counts = body.prefix_count ?? {};

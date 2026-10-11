@@ -24,7 +24,7 @@ Source, full documentation and issues:
 > **Outbound lookups — on by default, one setting to turn off.** To show which
 > network each visitor belongs to, the app sends each **public visitor IP
 > address** (once, then cached) and AS numbers to the free
-> [notoolkit.com](https://notoolkit.com) API. No URLs, user agents or other log
+> [notoolkit](https://api.notoolkit.com/) API (`api.notoolkit.com`). No URLs, user agents or other log
 > content are sent, and private addresses never are. Set
 > `NOTOOLKIT_ENABLED=false` to make no outbound calls at all; visitor countries
 > still work offline.

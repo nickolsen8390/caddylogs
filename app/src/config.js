@@ -16,6 +16,49 @@ const list = (v) =>
 
 const env = process.env;
 
+export const NOTOOLKIT_DEFAULT_URL = 'https://api.notoolkit.com/v1/';
+const RETIRED_HOSTS = new Set(['notoolkit.com', 'www.notoolkit.com']);
+
+/**
+ * The notoolkit API base URL and Host header to use. The API used to answer
+ * query strings on the site root (https://notoolkit.com/?ip=…); that address
+ * was retired with HTTP 410 in favour of https://api.notoolkit.com/v1/.
+ * `.env.example` spelled the old URL out up to 1.2.1, so most .env files
+ * still carry it: a root path gains /v1/, and the old hostname — in the URL
+ * or in NOTOOLKIT_HOST_HEADER — becomes api.notoolkit.com. `migrated` says so.
+ *
+ * @returns {{url:string, hostHeader:string, configuredUrl:string, migrated:boolean}}
+ */
+export function notoolkitEndpoint(rawUrl, rawHostHeader) {
+  const configuredUrl = (rawUrl || '').trim() || NOTOOLKIT_DEFAULT_URL;
+  let hostHeader = (rawHostHeader || '').trim();
+  let migrated = false;
+
+  let u;
+  try {
+    u = new URL(configuredUrl);
+  } catch {
+    // Unparseable: keep it, so the lookup fails with a message naming it.
+    return { url: configuredUrl, hostHeader, configuredUrl, migrated };
+  }
+  if (RETIRED_HOSTS.has(u.hostname.toLowerCase())) {
+    u.hostname = 'api.notoolkit.com';
+    migrated = true;
+  }
+  if (RETIRED_HOSTS.has(hostHeader.toLowerCase())) {
+    hostHeader = 'api.notoolkit.com';
+    migrated = true;
+  }
+  if (u.pathname === '/' || u.pathname === '') {
+    u.pathname = '/v1/';
+    migrated = true;
+  }
+  u.search = '';
+  u.hash = '';
+  const url = u.toString().replace(/\/*$/, '/');
+  return { url, hostHeader, configuredUrl, migrated };
+}
+
 export const config = {
   mode: (env.APP_MODE || 'all').toLowerCase(), // web | ingest | all
   tz: env.TZ || 'UTC',
@@ -61,15 +104,16 @@ export const config = {
 
   notoolkit: {
     enabled: bool(env.NOTOOLKIT_ENABLED, true),
-    // Lookups are query parameters on the root: /?ip=… and /?asn=…
-    url: (env.NOTOOLKIT_API_URL || 'https://notoolkit.com/').replace(/\/+$/, '') + '/',
+    // The versioned API base; lookups are paths under it: ip/{address} and
+    // asn/{number}. A setting written for the retired API is translated.
+    ...notoolkitEndpoint(env.NOTOOLKIT_API_URL, env.NOTOOLKIT_HOST_HEADER),
     // The public API needs no authentication; these exist only so a key can be
     // supplied without a code change if that ever becomes necessary.
     key: env.NOTOOLKIT_API_KEY || '',
-    // Lets NOTOOLKIT_API_URL point straight at an origin server by address
-    // while still presenting the virtual host it expects. Needed when the
-    // public name cannot be reached from inside the container (NAT hairpin).
-    hostHeader: env.NOTOOLKIT_HOST_HEADER || '',
+    // hostHeader (from notoolkitEndpoint): lets NOTOOLKIT_API_URL point
+    // straight at an origin server by address while still presenting the
+    // virtual host it expects. Needed when the public name cannot be reached
+    // from inside the container (NAT hairpin).
     authHeader: env.NOTOOLKIT_AUTH_HEADER || 'Authorization',
     authScheme: env.NOTOOLKIT_AUTH_SCHEME === undefined ? 'Bearer' : env.NOTOOLKIT_AUTH_SCHEME,
     ratePerSec: int(env.NOTOOLKIT_RATE_PER_SEC, 10),

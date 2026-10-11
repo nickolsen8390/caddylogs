@@ -18,7 +18,7 @@ const testIp = args.find((a) => !a.startsWith('--')) || '8.8.8.8';
 
 if (!config.notoolkit.enabled && !force) {
   console.log('notoolkit lookups are disabled (NOTOOLKIT_ENABLED=false).');
-  console.log('The stack makes no calls to notoolkit.com in this mode, so there is');
+  console.log('The stack makes no calls to the notoolkit API in this mode, so there is');
   console.log('nothing to probe. Country data still comes from MaxMind, and ASNs from');
   console.log('GeoLite2-ASN.mmdb if that file is present.');
   console.log('');
@@ -26,12 +26,20 @@ if (!config.notoolkit.enabled && !force) {
   process.exit(0);
 }
 
-const { url, headers } = describeRequest({ ip: testIp });
+if (!net.isIP(testIp)) {
+  console.error(`"${testIp}" is not an IP address. Usage: probe.js [ip] [--force]`);
+  process.exit(1);
+}
+
+const { url, headers } = describeRequest('ip', testIp);
 const target = new URL(url);
 
 console.log('notoolkit connectivity probe');
 console.log('---------------------------');
-console.log(`  NOTOOLKIT_API_URL   ${config.notoolkit.url}`);
+console.log(`  NOTOOLKIT_API_URL   ${config.notoolkit.configuredUrl}`);
+if (config.notoolkit.migrated) {
+  console.log(`  using               ${config.notoolkit.url}  (translated from the retired API; update .env)`);
+}
 console.log(`  request URL         ${url}`);
 console.log(`  Host header         ${headers.Host ?? `(default: ${target.hostname})`}`);
 console.log(`  timeout             ${config.notoolkit.timeoutMs} ms`);
@@ -97,7 +105,7 @@ if (tcp.ok) {
   console.error('');
   console.error('Fix by not leaving the network at all. In .env:');
   console.error('');
-  console.error('  NOTOOLKIT_API_URL=http://<origin-lan-address>/');
+  console.error('  NOTOOLKIT_API_URL=http://<origin-lan-address>/v1/');
   console.error(`  NOTOOLKIT_HOST_HEADER=${target.hostname}`);
   console.error('');
   console.error('See README section 5, "When the API is on the same server".');
@@ -118,6 +126,14 @@ try {
     console.log(`No BGP prefix covers ${testIp}. That is a valid answer, not a fault —`);
     console.log('the pipeline caches it and moves on. Try a different address.');
     process.exit(0);
+  }
+  if (res.status === 410) {
+    console.error('');
+    console.error('This URL is a retired notoolkit endpoint. The API now lives at');
+    console.error('https://api.notoolkit.com/v1/ — set NOTOOLKIT_API_URL to that in .env');
+    console.error('(or http://<origin-address>/v1/ with NOTOOLKIT_HOST_HEADER=api.notoolkit.com).');
+    console.error(`Body: ${(await res.text()).slice(0, 300)}`);
+    process.exit(4);
   }
   if (!res.ok) {
     console.error('');
