@@ -11,7 +11,7 @@ import { config } from '../config.js';
 import { logger } from '../util/log.js';
 import { extensionOf, refererHost, latencyBucket, parseLine, VISIT_COLUMNS } from './parser.js';
 import { isPageview, isExternalReferer, UTM_KEYS } from './traffic.js';
-import { Sessionizer } from './visits.js';
+import { Sessionizer, VISIT_GAP_MS } from './visits.js';
 
 const log = logger('rollup');
 
@@ -106,6 +106,13 @@ function prep() {
          org = COALESCE(asn_names.org, excluded.org),
          updated_at = excluded.updated_at`
     ),
+    seen: db.prepare('INSERT OR IGNORE INTO visitor_seen (bucket, host, visitor) VALUES (?, ?, ?)'),
+    setVisitor: db.prepare('UPDATE events SET visitor = ? WHERE id = ?'),
+    // Closing visits: see closeVisits().
+    oldestPending: db.prepare('SELECT MIN(ts) AS ts FROM events WHERE rolled = 0'),
+    tsFrom: db.prepare('SELECT ts FROM events WHERE id >= ? ORDER BY id LIMIT 1'),
+    quiet: db.prepare('SELECT * FROM visits WHERE closed = 0 AND end_ts < ? ORDER BY end_ts LIMIT ?'),
+    close: db.prepare('UPDATE visits SET closed = 1 WHERE id = ?'),
   };
   return stmts;
 }
@@ -114,6 +121,19 @@ function prep() {
 // dimension name or URL path, so it cannot collide the way a space or a pipe
 // could when the trailing component is free-form user input.
 const SEP = String.fromCharCode(0);
+
+/**
+ * One visit's share of a visit dimension, signed: requests = visits, bytes =
+ * page views, errors = bounces, dur_sum = visit duration (see schema.sql).
+ */
+function visitShare(v, sign) {
+  return {
+    requests: sign,
+    bytes: sign * v.pageviews,
+    errors: sign * (v.pageviews === 1 ? 1 : 0),
+    dur_sum: sign * Math.max(0, v.end_ts - v.start_ts),
+  };
+}
 
 /**
  * Accumulator that collapses a batch of events before touching the database.
@@ -127,6 +147,8 @@ export class Accumulator {
     this.hosts = new Map(); // host -> [first, last]
     this.asns = new Map(); // asn -> org
     this.sessions = new Sessionizer((v, sign) => this.visitDelta(v, sign), store);
+    this.seen = new Map(); // hour+host+visitor -> [hour, host, visitor]
+    this.visitorOfEvent = new Map(); // event id -> visitor
   }
 
   row(bucket, host) {
@@ -189,29 +211,31 @@ export class Accumulator {
    * Add (sign 1) or withdraw (sign -1) one visit's share of the counters, in
    * the hour the visit started. A visit that grows is withdrawn as it was and
    * added as it is, so every counter moves by exactly the difference: the
-   * bounce disappears on the second page view, the exit page moves, the
-   * duration lengthens.
+   * bounce disappears on the second page view, the duration lengthens. None
+   * of these keys change as a visit grows, so a withdrawal always lands on
+   * the row its addition did (maintenance leaves hours with open visits
+   * alone). The exit page does change, so it waits for closeVisit().
    */
   visitDelta(v, sign) {
     const bucket = hourBucket(v.start_ts);
-    const bounce = v.pageviews === 1 ? 1 : 0;
-    const ms = Math.max(0, v.end_ts - v.start_ts);
+    const change = visitShare(v, sign);
 
     const r = this.row(bucket, v.host);
     r.visits += sign;
     r.visitors += sign * v.first;
-    r.bounces += sign * bounce;
-    r.visit_ms += sign * ms;
+    r.bounces += change.errors;
+    r.visit_ms += change.dur_sum;
 
-    // Visit dimensions: requests = visits, bytes = page views, errors =
-    // bounces, dur_sum = visit duration (see schema.sql).
-    const change = { requests: sign, bytes: sign * v.pageviews, errors: sign * bounce, dur_sum: sign * ms };
     this.dimDelta(bucket, v.host, 'entry', v.entry_path, change);
-    this.dimDelta(bucket, v.host, 'exit', v.exit_path, change);
     this.dimDelta(bucket, v.host, 'channel', v.channel, change);
     this.dimDelta(bucket, v.host, 'refsite', v.refsite, change);
     this.dimDelta(bucket, v.host, 'lang', v.lang, change);
     for (const k of UTM_KEYS) this.dimDelta(bucket, v.host, k, v[k], change);
+  }
+
+  /** Count a finished visit's exit page, once. */
+  closeVisit(v) {
+    this.dimDelta(hourBucket(v.start_ts), v.host, 'exit', v.exit_path, visitShare(v, 1));
   }
 
   add(ev) {
@@ -264,7 +288,9 @@ export class Accumulator {
       this.row(bucket, host).pageviews += 1;
       this.dim(bucket, host, 'page', ev.path, ev);
       const refsite = isExternalReferer(host, ref) && ref !== '(unknown)' ? ref : null;
-      this.sessions.add(ev, refsite);
+      const visitor = this.sessions.add(ev, refsite);
+      this.seen.set(`${bucket}${SEP}${host}${SEP}${visitor}`, [bucket, host, visitor]);
+      if (ev.id) this.visitorOfEvent.set(ev.id, visitor);
     } else if (ev.nav && ev.status === 404 && ref) {
       // A browser followed a link — from your site or someone else's — to a
       // page that does not exist.
@@ -277,10 +303,9 @@ export class Accumulator {
     const now = Date.now();
     this.sessions.persist(now);
     for (const r of this.rollups.values()) s.rollup.run(r);
-    for (const d of this.dims.values()) {
-      // An exit page that changed twice within the batch nets to nothing.
-      if (d.requests || d.bytes || d.errors || d.dur_sum) s.dim.run(d);
-    }
+    for (const d of this.dims.values()) s.dim.run(d);
+    for (const [bucket, host, visitor] of this.seen.values()) s.seen.run(bucket, host, visitor);
+    for (const [id, visitor] of this.visitorOfEvent) s.setVisitor.run(visitor, id);
     for (const [host, [first, last]] of this.hosts) s.host.run(host, first, last);
     for (const [asn, org] of this.asns) s.asnName.run(asn, org, now);
   }
@@ -406,6 +431,51 @@ export function backfillVisits(limit = 5000) {
   return rows.length;
 }
 
+/**
+ * The time before which no page view can still arrive to extend a visit:
+ * the oldest request not yet rolled up, or the upgrade backfill's position,
+ * or now less the rollup lag — whichever is earliest.
+ */
+function closingWatermark(s) {
+  let mark = Date.now() - config.ingest.rollupLagMs;
+  const pending = s.oldestPending.get().ts;
+  if (pending !== null && pending < mark) mark = pending;
+  const marker = s.meta.get(BACKFILL_KEY);
+  if (marker) {
+    try {
+      const at = s.tsFrom.get(JSON.parse(marker.value).next)?.ts;
+      if (at !== undefined && at < mark) mark = at;
+    } catch {
+      /* backfillVisits() clears a corrupt marker */
+    }
+  }
+  return mark;
+}
+
+/**
+ * Close visits that have been quiet for VISIT_GAP_MS as of the watermark,
+ * counting each one's exit page.
+ * @returns {number} visits closed
+ */
+export function closeVisits(limit = 5000) {
+  const s = prep();
+  const rows = s.quiet.all(closingWatermark(s) - VISIT_GAP_MS, limit);
+  if (!rows.length) return 0;
+  const acc = new Accumulator();
+  for (const v of rows) acc.closeVisit(v);
+  getDb().transaction(() => {
+    acc.flush();
+    for (const v of rows) s.close.run(v.id);
+  })();
+  return rows.length;
+}
+
+/** Start of the oldest hour holding an open visit, in epoch seconds, or null. */
+export function oldestOpenVisitHour() {
+  const ts = getDb().prepare('SELECT MIN(start_ts) AS ts FROM visits WHERE closed = 0').get().ts;
+  return ts === null ? null : hourBucket(ts);
+}
+
 let timer = null;
 
 export function startRollupLoop(intervalMs = 5000) {
@@ -426,6 +496,10 @@ export function startRollupLoop(intervalMs = 5000) {
       const started = Date.now();
       while (Date.now() - started < 1000 && backfillVisits() > 0) {
         /* keep going within the budget */
+      }
+
+      while (closeVisits() === 5000) {
+        /* a backlog of finished visits, after a pause or a backfill */
       }
     } catch (err) {
       log.error('rollup loop error', { err: String(err) });

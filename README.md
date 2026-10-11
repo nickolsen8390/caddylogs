@@ -268,6 +268,7 @@ Everything lives in one SQLite file on the `data` volume, in three tiers:
 |---|---|---|
 | `events` | individual requests incl. the raw JSON line | `RAW_RETENTION_HOURS` (48h), capped by `RAW_MAX_ROWS` |
 | `visits` | visits that may still grow (working state for the Traffic page) | a day after a visit's last page view |
+| `visitor_seen` | which visitor ids had a page view in each hour, for exact visitor counts | `HOURLY_RETENTION_DAYS` (45d) |
 | `rollup` / `dims` at hourly granularity | every counter and dimension | `HOURLY_RETENTION_DAYS` (45d) |
 | the same tables at daily granularity | folded from hourly | `RETENTION_DAYS` (365d) |
 
@@ -306,7 +307,8 @@ also ends at midnight UTC, when the visitor id changes. A visit of one page is
 a bounce, and its duration is the time from its first page view to its last —
 so a bounce counts as zero seconds, as in other analytics tools. Visits are
 counted the moment they start, in the hour they started, and corrected as they
-grow, so the numbers are live.
+grow, so the numbers are live. The exit page is the exception: it is counted
+once a visit has been quiet for 30 minutes, since until then it is not known.
 
 Channels, referrers, campaigns, languages, entry and exit pages count
 **visits**, credited to the page each visit started on: a visit from a search
@@ -317,7 +319,8 @@ UTM tags come from the landing URL's query string. `source` and `ref` stand in
 for `utm_source`, and ad click IDs (`gclid`, `msclkid`, `fbclid`, `ttclid`, …)
 for untagged ad links. A visit that starts from another page of the same site
 (after 30 idle minutes, say) is in the **Internal** channel; your own site
-never appears as a referrer.
+never appears as a referrer. "The same site" includes its other subdomains:
+a link from docs.example.com to app.example.com is internal.
 
 What a server log cannot see: route changes inside a single-page app after
 its first load, pages served from a CDN cache without reaching Caddy, and

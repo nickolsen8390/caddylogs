@@ -8,8 +8,10 @@
 //
 // Visits are counted the moment they start and corrected as they grow (see
 // Accumulator.visitDelta in rollup.js), so the numbers are live rather than
-// waiting for a visit to time out. The `visits` table only holds the state
-// needed to extend a visit; the statistics themselves live in rollup/dims.
+// waiting for a visit to time out. Only the exit page waits: it is counted
+// once, when the visit is closed (closeVisits in rollup.js), because until
+// then it is not known. The `visits` table holds the state needed for both;
+// the statistics themselves live in rollup/dims.
 
 import crypto from 'node:crypto';
 import { getDb } from '../db.js';
@@ -22,6 +24,8 @@ export const SALT_PREFIX = 'visitor_salt:';
 export const ATTRIBUTION = [
   'channel', 'refsite', 'lang', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
 ];
+
+const INSERTED = ['visitor', 'host', 'start_ts', 'end_ts', 'pageviews', 'entry_path', 'exit_path', 'first', ...ATTRIBUTION];
 
 /** Visitor id: the salted hash, shortened — 128 bits is plenty to stay unique. */
 export function visitorHash(salt, ev) {
@@ -39,19 +43,11 @@ function prep() {
   stmts = {
     salt: db.prepare('SELECT value FROM meta WHERE key = ?'),
     addSalt: db.prepare('INSERT OR IGNORE INTO meta(key, value) VALUES(?, ?)'),
-    // The visit this page view belongs to: one that had not yet gone quiet
-    // for VISIT_GAP_MS. Matching on a window rather than "the latest visit"
-    // lets older page views (a backfill) find their own, earlier visit.
-    find: db.prepare(
-      `SELECT * FROM visits WHERE visitor = ? AND end_ts >= ? AND start_ts <= ?
-        ORDER BY end_ts LIMIT 1`
-    ),
-    seen: db.prepare('SELECT 1 FROM visits WHERE visitor = ? LIMIT 1'),
+    // Every visit a visitor id has: it changes daily, so this is a handful.
+    visits: db.prepare('SELECT * FROM visits WHERE visitor = ?'),
     insert: db.prepare(
-      `INSERT INTO visits (visitor, host, start_ts, end_ts, pageviews, entry_path, exit_path,
-                           first, touched, ${ATTRIBUTION.join(', ')})
-       VALUES (@visitor, @host, @start_ts, @end_ts, @pageviews, @entry_path, @exit_path,
-               @first, @touched, ${ATTRIBUTION.map((c) => `@${c}`).join(', ')})`
+      `INSERT INTO visits (${INSERTED.join(', ')}, touched)
+       VALUES (${INSERTED.map((c) => `@${c}`).join(', ')}, @touched)`
     ),
     update: db.prepare(
       `UPDATE visits SET end_ts = @end_ts, pageviews = @pageviews, exit_path = @exit_path,
@@ -87,13 +83,10 @@ export function dbStore() {
   const s = prep();
   return {
     salt: saltFor,
-    find: (visitor, lo, hi) => s.find.get(visitor, lo, hi) ?? null,
-    seen: (visitor) => Boolean(s.seen.get(visitor)),
+    visits: (visitor) => s.visits.all(visitor),
     insert: (v, now) => {
       const p = { touched: now };
-      for (const k of ['visitor', 'host', 'start_ts', 'end_ts', 'pageviews', 'entry_path', 'exit_path', 'first', ...ATTRIBUTION]) {
-        p[k] = v[k] ?? null;
-      }
+      for (const k of INSERTED) p[k] = v[k] ?? null;
       return Number(s.insert.run(p).lastInsertRowid);
     },
     update: (v, now) =>
@@ -110,17 +103,24 @@ export class Sessionizer {
   constructor(onChange, store = dbStore()) {
     this.onChange = onChange;
     this.store = store;
-    this.byVisitor = new Map(); // visitor -> visits touched in this batch
+    this.byVisitor = new Map(); // visitor -> all of that visitor's visits
     this.dirty = new Set();
   }
 
   /**
    * @param {object} ev a page view, with its visitor-analytics fields
    * @param {string|null} refsite the external referrer, or null
+   * @returns {string} the visitor id
    */
   add(ev, refsite) {
     const visitor = visitorHash(this.store.salt(Math.floor(ev.ts / DAY_MS)), ev);
-    const v = this.find(visitor, ev.ts);
+    const known = this.visitsOf(visitor);
+    // An open visit that had not yet gone quiet for VISIT_GAP_MS. Matching on
+    // a window rather than "the latest visit" lets older page views (a
+    // backfill) find their own, earlier visit.
+    const v = known.find(
+      (x) => !x.closed && ev.ts >= x.start_ts - VISIT_GAP_MS && ev.ts <= x.end_ts + VISIT_GAP_MS
+    );
 
     if (!v) {
       const created = {
@@ -132,16 +132,17 @@ export class Sessionizer {
         pageviews: 1,
         entry_path: ev.path,
         exit_path: ev.path,
-        first: this.byVisitor.has(visitor) || this.store.seen(visitor) ? 0 : 1,
+        first: known.length ? 0 : 1, // ids are per day: no earlier visit means a new visitor today
+        closed: 0,
         channel: ev.channel ?? 'Direct',
         refsite,
         lang: ev.lang ?? null,
       };
       for (const k of ATTRIBUTION.slice(3)) created[k] = ev[k] ?? null;
-      this.remember(created);
+      known.push(created);
       this.dirty.add(created);
       this.onChange(created, 1);
-      return;
+      return visitor;
     }
 
     this.onChange(v, -1);
@@ -155,28 +156,17 @@ export class Sessionizer {
     }
     this.dirty.add(v);
     this.onChange(v, 1);
+    return visitor;
   }
 
-  find(visitor, ts) {
-    const mine = this.byVisitor.get(visitor);
-    if (mine) {
-      for (const v of mine) {
-        if (ts >= v.start_ts - VISIT_GAP_MS && ts <= v.end_ts + VISIT_GAP_MS) return v;
-      }
+  /** All of a visitor's visits, read once per batch and kept current in memory. */
+  visitsOf(visitor) {
+    let list = this.byVisitor.get(visitor);
+    if (!list) {
+      list = this.store.visits(visitor).map((row) => ({ ...row }));
+      this.byVisitor.set(visitor, list);
     }
-    const row = this.store.find(visitor, ts - VISIT_GAP_MS, ts + VISIT_GAP_MS);
-    if (!row) return null;
-    // Already in memory with newer values than the stored row.
-    const loaded = mine?.find((v) => v.id === row.id);
-    if (loaded) return loaded;
-    this.remember(row);
-    return row;
-  }
-
-  remember(v) {
-    const list = this.byVisitor.get(v.visitor);
-    if (list) list.push(v);
-    else this.byVisitor.set(v.visitor, [v]);
+    return list;
   }
 
   /** Write changed visits. Runs inside the caller's transaction. */

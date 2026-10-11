@@ -225,6 +225,11 @@ group('Visitor analytics', () => {
   ok('unknown tagged link is a campaign', ch(null, 'utm_campaign=spring'), 'Campaign');
   ok('external referrer', isExternalReferer('example.com', 'other.org'), true);
   ok('www is not external', isExternalReferer('example.com', 'www.example.com'), false);
+  ok('own subdomain is not external', isExternalReferer('app.example.com', 'docs.example.com'), false);
+  ok('own subdomain is internal', ch('docs.example.com', null, 'app.example.com'), 'Internal');
+  ok('another site under co.uk is external', isExternalReferer('shop.example.co.uk', 'other.co.uk'), true);
+  ok('own site under co.uk is not', isExternalReferer('shop.example.co.uk', 'www.example.co.uk'), false);
+  ok('google.co.uk is still search', ch('www.google.co.uk', null, 'example.co.uk'), 'Search');
 
   ok('language with region', languageOf('en-us,en;q=0.9'), 'en-US');
   ok('language with script', languageOf('zh-hant-tw'), 'zh-Hant');
@@ -256,13 +261,7 @@ group('Visits', () => {
   const rows = [];
   const store = {
     salt: (day) => `salt-${day}`,
-    find: (visitor, lo, hi) => {
-      const r = rows
-        .filter((x) => x.visitor === visitor && x.end_ts >= lo && x.start_ts <= hi)
-        .sort((a, b) => a.end_ts - b.end_ts)[0];
-      return r ? { ...r } : null;
-    },
-    seen: (visitor) => rows.some((x) => x.visitor === visitor),
+    visits: (visitor) => rows.filter((x) => x.visitor === visitor).map((x) => ({ ...x })),
     insert: (v) => rows.push({ ...v, id: rows.length + 1 }),
     update: (v) => Object.assign(rows.find((x) => x.id === v.id), {
       end_ts: v.end_ts, pageviews: v.pageviews, exit_path: v.exit_path,
@@ -271,9 +270,11 @@ group('Visits', () => {
 
   const T0 = Date.UTC(2026, 9, 10, 12, 0, 0);
   const MIN = 60_000;
+  const HOUR = 60 * MIN;
+  let nextId = 1;
   const view = (ts, path, extra = {}) => ({
-    ts, host: 'example.com', ip: '203.0.113.9', ua: 'Browser/1', path, status: 200, nav: 1,
-    channel: 'Search', referer_host: 'www.google.com', lang: 'en-US', utm_source: null,
+    id: nextId++, ts, host: 'example.com', ip: '203.0.113.9', ua: 'Browser/1', path, status: 200,
+    nav: 1, channel: 'Search', referer_host: 'www.google.com', lang: 'en-US', utm_source: null,
     bytes_out: 0, dur_ms: 0, ...extra,
   });
   const batch = (...views) => {
@@ -293,30 +294,41 @@ group('Visits', () => {
   ok('two page views, one visit', [r.pageviews, r.visits, r.visitors], [2, 1, 1]);
   ok('not a bounce, one minute long', [r.bounces, r.visit_ms], [0, MIN]);
   ok('entry page', dimAt(a, 'entry', '/'), [1, 2, 0, MIN]);
-  ok('exit page moved on', [dimAt(a, 'exit', '/')[0], dimAt(a, 'exit', '/pricing')[0]], [0, 1]);
+  ok('exit page waits for the visit to close', dimAt(a, 'exit', '/pricing')[0], 0);
   ok('visit credited to its channel once', dimAt(a, 'channel', 'Search'), [1, 2, 0, MIN]);
   ok('external referrer recorded', dimAt(a, 'refsite', 'www.google.com')[0], 1);
+  ok('visitor seen once in the hour', a.seen.size, 1);
+  ok('visitor written back to both page views', a.visitorOfEvent.size, 2);
 
   // A later batch extends the stored visit by the difference only.
   const b = batch(view(T0 + 10 * MIN, '/signup', { channel: 'Internal', referer_host: 'example.com' }));
   const rb = rowAt(b, T0);
   ok('extension adds no visit', [rb.visits ?? 0, rb.visitors ?? 0, rb.bounces ?? 0], [0, 0, 0]);
   ok('extension lengthens the visit', rb.visit_ms, 9 * MIN);
-  ok('exit page moves across batches', [dimAt(b, 'exit', '/pricing')[0], dimAt(b, 'exit', '/signup')[0]], [-1, 1]);
   ok('channel stays the landing channel', [dimAt(b, 'channel', 'Search')[0], dimAt(b, 'channel', 'Internal')[0]], [0, 0]);
 
-  const c = batch(view(T0 + 2 * 60 * MIN, '/'));
+  // Closing counts the exit page once, with the visit's final figures.
+  const closing = new Accumulator(store);
+  closing.closeVisit(rows[0]);
+  ok('exit page counted on close', dimAt(closing, 'exit', '/signup'), [1, 3, 0, 10 * MIN]);
+
+  const c = batch(view(T0 + 2 * HOUR, '/'));
   ok('after 30 quiet minutes, a new visit by a returning visitor',
-    [rowAt(c, T0 + 2 * 60 * MIN).visits, rowAt(c, T0 + 2 * 60 * MIN).visitors, rowAt(c, T0 + 2 * 60 * MIN).bounces], [1, 0, 1]);
+    [rowAt(c, T0 + 2 * HOUR).visits, rowAt(c, T0 + 2 * HOUR).visitors, rowAt(c, T0 + 2 * HOUR).bounces], [1, 0, 1]);
+
+  // A closed visit is never extended, even by a page view inside its window.
+  rows[rows.length - 1].closed = 1;
+  const c2 = batch(view(T0 + 2 * HOUR + 5 * MIN, '/more'));
+  ok('a closed visit is not extended', rowAt(c2, T0 + 2 * HOUR).visits, 1);
 
   const d = batch(view(T0 + 5 * MIN, '/', { ua: 'Other/2' }));
   ok('another browser is another visitor', rowAt(d, T0).visitors, 1);
 
-  const e = batch(view(T0 + 24 * 60 * MIN, '/'));
-  ok('the next day is a new visitor', rowAt(e, T0 + 24 * 60 * MIN).visitors, 1);
+  const e = batch(view(T0 + 24 * HOUR, '/'));
+  ok('the next day is a new visitor', rowAt(e, T0 + 24 * HOUR).visitors, 1);
 
-  const f = batch(view(T0 + 3 * 60 * MIN, '/', { status: 404 }), view(T0 + 3 * 60 * MIN, '/x', { nav: 0 }));
-  ok('only page views make visits', rowAt(f, T0 + 3 * 60 * MIN).visits ?? 0, 0);
+  const f = batch(view(T0 + 3 * HOUR, '/', { status: 404 }), view(T0 + 3 * HOUR, '/x', { nav: 0 }));
+  ok('only page views make visits', [rowAt(f, T0 + 3 * HOUR).visits ?? 0, f.seen.size], [0, 0]);
 
   ok('visitor id is stable', visitorHash('s', view(T0, '/')), visitorHash('s', view(T0 + MIN, '/a')));
   ok('and differs by salt', visitorHash('s', view(T0, '/')) === visitorHash('t', view(T0, '/')), false);

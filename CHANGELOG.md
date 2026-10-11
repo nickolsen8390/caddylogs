@@ -4,6 +4,30 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org): a new major version (2.0.0) is the
 only kind that can require you to change anything when upgrading.
 
+## [1.2.1] — 2026-10-10
+
+### Fixed
+
+- Traffic page: **Visitors** was too low for any range other than whole UTC
+  days — 1 hour, 6 hours and the rolling 24 hours. A visitor who had first
+  come earlier that day was left out of a later window entirely. Visitors are
+  now counted exactly for any range within the hourly window
+  (`HOURLY_RETENTION_DAYS`), and per whole day beyond it. The visitor line in
+  the chart is exact too, including at minute resolution.
+- Traffic page: the Languages list could stop the page from loading once old
+  data had been condensed and a rare-language "(other)" row appeared.
+- Exit pages are now counted once each visit has finished (after 30 quiet
+  minutes), instead of being moved on every page view. That could leave exit
+  pages counted below zero when importing old logs.
+- Visits from another subdomain of the same site (docs.example.com to
+  app.example.com) count as internal, not as a referral from another site.
+  `example.co.uk`-style domains are handled too.
+
+### Changed
+
+- The Traffic page, dashboard and domain pages run fewer database queries
+  on each refresh.
+
 ## [1.2.0] — 2026-10-10
 
 ### Added
@@ -134,6 +158,7 @@ First public release.
   filesystem, no Linux capabilities and `no-new-privileges`.
 - Works on phones: slide-in menu, readable request lists, folding filters.
 
+[1.2.1]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.2.1
 [1.2.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.2.0
 [1.1.1]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.1.1
 [1.1.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.1.0

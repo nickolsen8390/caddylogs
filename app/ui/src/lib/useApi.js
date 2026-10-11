@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, ApiError } from './api.js';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { api, ApiError, qs } from './api.js';
 
 /**
  * Fetch `path` whenever it changes, with in-flight cancellation and an
@@ -49,6 +49,19 @@ export function useApi(path, { refreshMs = 0, enabled = true, onUnauthorized } =
   }, [refreshMs, enabled, load]);
 
   return { data, error, loading, reload: () => load(true) };
+}
+
+/**
+ * Domains for a domain picker: those with traffic in `range`, sorted, plus
+ * the `selected` one even when it has none, so the picker can still show it.
+ */
+export function useHostOptions(selected, { range = '7d', onUnauthorized } = {}) {
+  const domains = useApi(`/api/domains${qs({ range })}`, { onUnauthorized });
+  return useMemo(() => {
+    const list = (domains.data?.rows ?? []).map((r) => r.host).sort();
+    if (selected && !list.includes(selected)) list.unshift(selected);
+    return list;
+  }, [domains.data, selected]);
 }
 
 /** Persist a small piece of UI state per browser. */

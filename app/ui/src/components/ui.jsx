@@ -104,13 +104,15 @@ export function Tabs({ tabs, active, onChange }) {
  *
  * Pass `dim` (and optionally `context`) to make every row a link to the
  * individual requests behind it — that is how the whole app becomes drillable
- * without each caller wiring its own navigation.
+ * without each caller wiring its own navigation. `label` changes how a value
+ * is shown and keeps that link; `render` replaces the cell content entirely.
  */
 export function TopList({
   rows,
   valueKey = 'requests',
   format = compact,
   render,
+  label: labelOf,
   empty,
   onRowClick,
   dim,
@@ -126,7 +128,7 @@ export function TopList({
           const v = Number(r[valueKey]) || 0;
           const raw = r.value ?? r.host ?? r.country ?? null;
           const to = dim && !render ? drillTo(dim, raw, context) : null;
-          const label = render ? render(r) : (raw ?? '—');
+          const label = render ? render(r) : labelOf ? labelOf(r) : (raw ?? '—');
           return (
             <tr
               key={`${raw ?? r.asn ?? i}`}

@@ -63,7 +63,8 @@ CREATE TABLE IF NOT EXISTS events (
   utm_medium   TEXT,
   utm_campaign TEXT,
   utm_term     TEXT,
-  utm_content  TEXT
+  utm_content  TEXT,
+  visitor      TEXT     -- on page views: the visitor id (ingest/visits.js)
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts        ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_events_host_ts   ON events(host, ts);
@@ -90,7 +91,9 @@ CREATE TABLE IF NOT EXISTS rollup (
   pageviews INTEGER NOT NULL DEFAULT 0,
   -- Visits are counted in the hour they started (ingest/visits.js).
   visits    INTEGER NOT NULL DEFAULT 0,
-  visitors  INTEGER NOT NULL DEFAULT 0,  -- a visitor's first visit of the UTC day
+  -- A visitor's first visit of the UTC day. Exact for whole days, so it is
+  -- only read from daily rows; recent hours count visitor_seen instead.
+  visitors  INTEGER NOT NULL DEFAULT 0,
   bounces   INTEGER NOT NULL DEFAULT 0,  -- visits of a single page view
   visit_ms  INTEGER NOT NULL DEFAULT 0,  -- first to last page view, summed
   PRIMARY KEY (bucket, gran, host)
@@ -108,6 +111,8 @@ CREATE INDEX IF NOT EXISTS idx_rollup_scan ON rollup(gran, bucket);
 -- errors = bounces, dur_sum = visit duration in ms.
 --       entry | exit | channel | refsite | lang | utm_source | utm_medium |
 --       utm_campaign | utm_term | utm_content
+-- All but `exit` are counted when a visit starts and adjusted as it grows;
+-- `exit` is counted once, when the visit closes.
 CREATE TABLE IF NOT EXISTS dims (
   bucket   INTEGER NOT NULL,
   gran     TEXT    NOT NULL,
@@ -123,9 +128,10 @@ CREATE TABLE IF NOT EXISTS dims (
 CREATE INDEX IF NOT EXISTS idx_dims_scan  ON dims(gran, dim, bucket);
 CREATE INDEX IF NOT EXISTS idx_dims_host  ON dims(gran, dim, host, bucket);
 
--- Visits that may still grow, so a later page view can extend the right one
--- (ingest/visits.js). Statistics are in rollup/dims; this is working state,
--- pruned a day after a visit was last touched.
+-- Visits, so a later page view can extend the right one and a visit's exit
+-- page can be counted when it closes (ingest/visits.js). Statistics are in
+-- rollup/dims; this is working state, pruned a day after a visit was last
+-- touched. The index on open visits is created in db.js.
 CREATE TABLE IF NOT EXISTS visits (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   visitor      TEXT    NOT NULL,   -- hash of the day's salt, host, address, User-Agent
@@ -144,11 +150,22 @@ CREATE TABLE IF NOT EXISTS visits (
   utm_campaign TEXT,
   utm_term     TEXT,
   utm_content  TEXT,
-  touched      INTEGER NOT NULL DEFAULT 0   -- wall clock of the last change
+  touched      INTEGER NOT NULL DEFAULT 0,  -- wall clock of the last change
+  closed       INTEGER NOT NULL DEFAULT 0   -- 1 once it can no longer grow
 );
 CREATE INDEX IF NOT EXISTS idx_visits_visitor ON visits(visitor, end_ts);
 CREATE INDEX IF NOT EXISTS idx_visits_end     ON visits(end_ts);
 CREATE INDEX IF NOT EXISTS idx_visits_touched ON visits(touched);
+
+-- Which visitors had a page view in each hour, so "visitors" over any range
+-- is an exact distinct count. Hours are deleted as they fold into days, where
+-- rollup.visitors is exact.
+CREATE TABLE IF NOT EXISTS visitor_seen (
+  bucket   INTEGER NOT NULL,   -- epoch seconds at the start of the hour
+  host     TEXT    NOT NULL,
+  visitor  TEXT    NOT NULL,
+  PRIMARY KEY (bucket, host, visitor)
+) WITHOUT ROWID;
 
 -- First/last seen per served host, for the domains list.
 CREATE TABLE IF NOT EXISTS hosts (

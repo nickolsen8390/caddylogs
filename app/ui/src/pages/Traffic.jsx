@@ -7,9 +7,9 @@
 // that goes on to read five pages is one Search visit, not one Search and four
 // Internal.
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { useApi } from '../lib/useApi.js';
+import { useApi, useHostOptions } from '../lib/useApi.js';
 import { qs } from '../lib/api.js';
 import { drillTo } from '../lib/drill.js';
 import { Banner, Empty, Loading, Panel, Stat, Tabs, TopList } from '../components/ui.jsx';
@@ -43,17 +43,11 @@ export default function Traffic({ ctx }) {
   const [utmTab, setUtmTab] = useState('utm_source');
 
   const meta = useApi('/api/meta', { refreshMs: 60_000, onUnauthorized });
-  const domains = useApi(`/api/domains${qs({ range })}`, { onUnauthorized });
+  const hostOptions = useHostOptions(host, { range, onUnauthorized });
   const { data, loading, error } = useApi(`/api/traffic${qs({ range, host })}`, {
     refreshMs: 30_000,
     onUnauthorized,
   });
-
-  const hostOptions = useMemo(() => {
-    const list = (domains.data?.rows ?? []).map((r) => r.host).sort();
-    if (host && !list.includes(host)) list.unshift(host);
-    return list;
-  }, [domains.data, host]);
 
   const t = data?.totals;
   const p = data?.previous;
@@ -128,7 +122,7 @@ export default function Traffic({ ctx }) {
             </Panel>
             <Panel title="Channels" flush>
               <VisitList rows={data.channels.rows} dim="channel" ctx={dctx}
-                         render={(r) => (
+                         label={(r) => (
                            <>
                              {r.value} <span className="faint">{visits ? pct(r.requests / visits, 0) : ''}</span>
                            </>
@@ -143,7 +137,8 @@ export default function Traffic({ ctx }) {
             <Panel title="Top pages" flush>
               <TopList rows={data.pages.rows} dim="page" context={dctx} />
             </Panel>
-            <Panel title="Exit pages" flush>
+            <Panel title="Exit pages" flush
+                   actions={<span className="faint" style={{ fontSize: 11 }} title="A visit's exit page is counted once it has been quiet for 30 minutes">finished visits</span>}>
               <TopList rows={data.exits.rows} dim="exit" context={dctx} />
             </Panel>
           </div>
@@ -154,8 +149,8 @@ export default function Traffic({ ctx }) {
                          empty="No visits from other sites in this window." />
             </Panel>
             <Panel title="Languages" flush>
-              <TopList rows={data.languages.rows}
-                       render={(r) => <Link to={drillTo('lang', r.value, dctx)}>{languageName(r.value)}</Link>} />
+              <TopList rows={data.languages.rows} dim="lang" context={dctx}
+                       label={(r) => languageName(r.value)} />
             </Panel>
             <Panel title="Broken links" flush>
               <TopList
@@ -190,7 +185,7 @@ export default function Traffic({ ctx }) {
  * Ranked visits with bounce rate and time on site. Visit dimensions store
  * visits as `requests`, bounces as `errors` and duration as `avg_ms`.
  */
-function VisitList({ rows, dim, ctx, render, empty }) {
+function VisitList({ rows, dim, ctx, label: labelOf, empty }) {
   if (!rows?.length) return <Empty>{empty ?? 'Nothing recorded yet.'}</Empty>;
   const max = Math.max(...rows.map((r) => r.requests), 1);
   return (
@@ -207,7 +202,7 @@ function VisitList({ rows, dim, ctx, render, empty }) {
         <tbody>
           {rows.map((r) => {
             const to = drillTo(dim, r.value, ctx);
-            const label = render ? render(r) : r.value;
+            const label = labelOf ? labelOf(r) : r.value;
             return (
               <tr key={r.value}>
                 <td className="bar-cell cell-wide">

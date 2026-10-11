@@ -238,29 +238,26 @@ export function parseLine(line) {
   };
 }
 
+/** Field names deriveVisit() returns, in the order the events table holds them. */
+export const VISIT_COLUMNS = [
+  'nav', 'channel', 'lang', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+];
+
 /**
  * The visitor-analytics columns for one request. Campaign, channel and
  * language are only worked out for navigations: an image or an API call
- * carries the page's referrer, not a visit of its own.
+ * carries the page's referrer, not a visit of its own. Every column in
+ * VISIT_COLUMNS is always present, as the events insert binds them all.
  */
 export function deriveVisit({ host, method, query, refHost, headers, bot, respHeaders }) {
-  const nav = isNavigation({ method, bot, headers, respHeaders }) ? 1 : 0;
-  if (!nav) {
-    return {
-      nav, channel: null, lang: null,
-      utm_source: null, utm_medium: null, utm_campaign: null, utm_term: null, utm_content: null,
-    };
-  }
+  const out = Object.fromEntries(VISIT_COLUMNS.map((c) => [c, null]));
+  out.nav = isNavigation({ method, bot, headers, respHeaders }) ? 1 : 0;
+  if (!out.nav) return out;
   const utm = campaignOf(query);
   return {
-    nav,
+    ...out,
     channel: channelOf({ host, refHost, utm }),
     lang: languageOf(header(headers, 'Accept-Language')),
     ...utm,
   };
 }
-
-/** Field names deriveVisit() returns, in the order the events table holds them. */
-export const VISIT_COLUMNS = [
-  'nav', 'channel', 'lang', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
-];

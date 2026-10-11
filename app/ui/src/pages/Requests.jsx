@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api, qs, ApiError } from '../lib/api.js';
-import { useApi } from '../lib/useApi.js';
+import { useHostOptions } from '../lib/useApi.js';
 import { Banner, Chip, Loading, Panel } from '../components/ui.jsx';
 import { RequestList } from '../components/RequestList.jsx';
 import { FILTER_KEYS, FILTER_LABELS, filterValueLabel } from '../lib/drill.js';
@@ -63,12 +63,7 @@ export default function Requests({ ctx }) {
     setSearch(active.q ?? '');
   }, [active]);
 
-  const domains = useApi('/api/domains?range=7d', { onUnauthorized: ctx?.onUnauthorized });
-  const hostOptions = useMemo(() => {
-    const list = (domains.data?.rows ?? []).map((r) => r.host).sort();
-    if (active.host && !list.includes(active.host)) list.unshift(active.host);
-    return list;
-  }, [domains.data, active.host]);
+  const hostOptions = useHostOptions(active.host, { onUnauthorized: ctx?.onUnauthorized });
 
   const [rows, setRows] = useState([]);
   const [cursor, setCursor] = useState(null);

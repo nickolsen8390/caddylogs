@@ -113,6 +113,31 @@ function migrate(db) {
     log.info('migration: added visitor-analytics columns to events');
   }
 
+  if (!columns('events').has('visitor')) {
+    db.exec('ALTER TABLE events ADD COLUMN visitor TEXT');
+    log.info('migration: added events.visitor');
+  }
+
+  if (!columns('visits').has('closed')) {
+    // 1.2.1 counts a visit's exit page when it closes; 1.2.0 already counted
+    // the exit pages of the visits it has, so those are treated as closed.
+    // It also left exit-page rows that netted to nothing.
+    db.exec('ALTER TABLE visits ADD COLUMN closed INTEGER NOT NULL DEFAULT 0');
+    db.exec('UPDATE visits SET closed = 1');
+    // Visitor counts now come from visitor_seen; seed it from those visits so
+    // the hours 1.2.0 recorded keep their visitors (each in its start hour).
+    db.exec(
+      `INSERT OR IGNORE INTO visitor_seen (bucket, host, visitor)
+       SELECT (start_ts / 3600000) * 3600, host, visitor FROM visits`
+    );
+    db.exec(
+      `DELETE FROM dims WHERE dim = 'exit'
+          AND requests = 0 AND bytes = 0 AND errors = 0 AND dur_sum = 0`
+    );
+    log.info('migration: added visits.closed');
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_visits_open ON visits(end_ts) WHERE closed = 0');
+
   const rollup = columns('rollup');
   for (const col of ['pageviews', 'visits', 'visitors', 'bounces', 'visit_ms']) {
     if (!rollup.has(col)) {

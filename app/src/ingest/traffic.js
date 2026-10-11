@@ -170,12 +170,34 @@ const matchRules = (rules, value) => {
   return null;
 };
 
-const stripWww = (h) => (h.startsWith('www.') ? h.slice(4) : h);
+// Second-level labels under which a country code registers names, so
+// shop.example.co.uk belongs to example.co.uk rather than co.uk.
+const COUNTRY_SLDS = new Set(['co', 'com', 'net', 'org', 'gov', 'ac', 'edu', 'ne', 'or', 'go', 'gob', 'nic']);
 
-/** A referrer on the same site — the visitor clicked a link on your own page. */
+/**
+ * The registered domain a host belongs to: blog.example.com -> example.com,
+ * shop.example.co.uk -> example.co.uk. An approximation of the public suffix
+ * list, good enough to tell your own subdomains from other sites.
+ */
+export function siteOf(host) {
+  if (!host) return host;
+  const h = host.toLowerCase();
+  if (h.startsWith('[') || /^[\d.]+$/.test(h)) return h; // an address, not a name
+  const labels = h.split('.');
+  if (labels.length <= 2) return h;
+  const tld = labels[labels.length - 1];
+  const sld = labels[labels.length - 2];
+  const keep = tld.length === 2 && COUNTRY_SLDS.has(sld) ? 3 : 2;
+  return labels.slice(-keep).join('.');
+}
+
+/**
+ * A referrer on the same site — a link on one of your own pages, including
+ * from another subdomain of the same domain.
+ */
 export function isInternalReferer(host, refHost) {
   if (!host || !refHost) return false;
-  return stripWww(host) === stripWww(refHost);
+  return siteOf(host) === siteOf(refHost);
 }
 
 /** True for a referrer host that came from somewhere else. */

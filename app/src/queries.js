@@ -67,13 +67,15 @@ export function totals(fromMs, toMs, host = null) {
               COALESCE(SUM(c3xx),0) AS c3xx, COALESCE(SUM(c4xx),0) AS c4xx,
               COALESCE(SUM(c5xx),0) AS c5xx, COALESCE(SUM(bots),0) AS bots,
               COALESCE(SUM(pageviews),0) AS pageviews,
-              COALESCE(SUM(visits),0) AS visits, COALESCE(SUM(visitors),0) AS visitors,
+              COALESCE(SUM(visits),0) AS visits,
+              COALESCE(SUM(CASE WHEN gran = 'd' THEN visitors ELSE 0 END),0) AS visitors,
               COALESCE(SUM(bounces),0) AS bounces, COALESCE(SUM(visit_ms),0) AS visit_ms,
               COUNT(DISTINCT host) AS hosts
          FROM rollup
         WHERE bucket >= @from AND bucket < @to ${hostClause(host)}`
     )
     .get(params);
+  row.visitors += seenVisitors(params, host).reduce((n, r) => n + r.visitors, 0);
 
   const uniq = db
     .prepare(
@@ -93,6 +95,29 @@ export function totals(fromMs, toMs, host = null) {
     avg_visit_ms: row.visits ? row.visit_ms / row.visits : null,
     pages_per_visit: row.visits ? row.pageviews / row.visits : null,
   };
+}
+
+/**
+ * Distinct visitors in the hours still held at hourly detail, optionally per
+ * step. Visitor ids change daily, so over several days this counts each
+ * visitor once per day — the same "visitor-days" rollup.visitors holds for
+ * the folded daily rows, which the callers add (only from gran 'd', where it
+ * is exact; an hourly row's count would miss anyone who came earlier that
+ * day). The two never cover the same day: folding deletes the hours.
+ */
+function seenVisitors(params, host, step = null) {
+  const bucket = step ? 'CAST(bucket / @step AS INTEGER) * @step' : '0';
+  const p = { from: params.from, to: params.to };
+  if (host) p.host = host;
+  if (step) p.step = step;
+  return getDb()
+    .prepare(
+      `SELECT ${bucket} AS bucket, COUNT(DISTINCT visitor) AS visitors
+         FROM visitor_seen
+        WHERE bucket >= @from AND bucket < @to ${hostClause(host)}
+        GROUP BY 1`
+    )
+    .all(p);
 }
 
 /** Visitors with a page view in the last few minutes. */
@@ -128,32 +153,17 @@ export function series(fromMs, toMs, host = null, stepSec = null) {
                 SUM(CASE WHEN status >= 400 AND status < 500 THEN 1 ELSE 0 END) AS c4xx,
                 SUM(CASE WHEN status >= 500 THEN 1 ELSE 0 END) AS c5xx,
                 SUM(bot) AS bots,
-                SUM(CASE WHEN ${PAGEVIEW_SQL} THEN 1 ELSE 0 END) AS pageviews
+                SUM(CASE WHEN ${PAGEVIEW_SQL} THEN 1 ELSE 0 END) AS pageviews,
+                COUNT(DISTINCT visitor) AS visitors
            FROM events
           WHERE ts >= @from AND ts < @to ${hostClause(host)}
           GROUP BY bucket ORDER BY bucket`
       )
       .all(params);
-
-    // Visits by the minute they started, from the visit state still held.
-    const visits = db
-      .prepare(
-        `SELECT CAST(start_ts / (@step * 1000) AS INTEGER) * @step AS bucket,
-                COUNT(*) AS visits, SUM(first) AS visitors
-           FROM visits
-          WHERE start_ts >= @from AND start_ts < @to ${hostClause(host)}
-          GROUP BY bucket`
-      )
-      .all(params);
-    const byBucket = new Map(visits.map((v) => [v.bucket, v]));
-    for (const r of rows) {
-      const v = byBucket.get(r.bucket);
-      r.visits = v?.visits ?? 0;
-      r.visitors = v?.visitors ?? 0;
-    }
     return { step, points: rows };
   }
 
+  const params = scope(fromMs, toMs, host, { step });
   const rows = db
     .prepare(
       `SELECT CAST(bucket / @step AS INTEGER) * @step AS bucket,
@@ -161,12 +171,15 @@ export function series(fromMs, toMs, host = null, stepSec = null) {
               SUM(bytes_in) AS bytes_in, SUM(dur_sum) AS dur_sum,
               SUM(c2xx) AS c2xx, SUM(c3xx) AS c3xx,
               SUM(c4xx) AS c4xx, SUM(c5xx) AS c5xx, SUM(bots) AS bots,
-              SUM(pageviews) AS pageviews, SUM(visits) AS visits, SUM(visitors) AS visitors
+              SUM(pageviews) AS pageviews, SUM(visits) AS visits,
+              SUM(CASE WHEN gran = 'd' THEN visitors ELSE 0 END) AS visitors
          FROM rollup
         WHERE bucket >= @from AND bucket < @to ${hostClause(host)}
         GROUP BY 1 ORDER BY 1`
     )
-    .all(scope(fromMs, toMs, host, { step }));
+    .all(params);
+  const seen = new Map(seenVisitors(params, host, step).map((r) => [r.bucket, r.visitors]));
+  for (const r of rows) r.visitors += seen.get(r.bucket) ?? 0;
   return { step, points: rows };
 }
 
@@ -185,7 +198,7 @@ export function topDim(
   dim,
   fromMs,
   toMs,
-  { host = null, limit = 20, offset = 0, sort = 'requests', search = null } = {}
+  { host = null, limit = 20, offset = 0, sort = 'requests', search = null, totals = true } = {}
 ) {
   const db = getDb();
   const order = SORTS[sort] ?? SORTS.requests;
@@ -209,12 +222,13 @@ export function topDim(
          FROM dims
         WHERE dim = @dim AND bucket >= @from AND bucket < @to ${hostClause(host)} ${likeClause}
         GROUP BY value
-       HAVING SUM(requests) > 0  -- an exit page a visit has since moved on from
         ORDER BY ${order}
         LIMIT @limit OFFSET @offset`
     )
     .all(params);
 
+  // A second pass over the range; callers that only show the rows skip it.
+  if (!totals) return { rows, distinct: null, total: null };
   const total = db
     .prepare(
       `SELECT COUNT(DISTINCT value) AS n, COALESCE(SUM(requests),0) AS requests

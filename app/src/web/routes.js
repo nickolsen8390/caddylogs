@@ -67,16 +67,16 @@ export async function registerApi(app) {
       totals: Q.totals(from, to, host),
       previous: Q.totals(prev.from, prev.to, host),
       series: Q.series(from, to, host, intParam(req.query.step, null, 604800) || null),
-      status: Q.topDim('status', from, to, { host, limit: 15 }).rows,
-      topPaths: Q.topDim('path', from, to, { host, limit: 10 }).rows,
-      topIps: Q.topDim('ip', from, to, { host, limit: 10 }).rows,
-      topReferers: Q.topDim('referer', from, to, { host, limit: 10 }).rows,
-      topBrowsers: Q.topDim('browser', from, to, { host, limit: 8 }).rows,
+      status: Q.topDim('status', from, to, { host, limit: 15, totals: false }).rows,
+      topPaths: Q.topDim('path', from, to, { host, limit: 10, totals: false }).rows,
+      topIps: Q.topDim('ip', from, to, { host, limit: 10, totals: false }).rows,
+      topReferers: Q.topDim('referer', from, to, { host, limit: 10, totals: false }).rows,
+      topBrowsers: Q.topDim('browser', from, to, { host, limit: 8, totals: false }).rows,
       countries: Q.countries(from, to, host),
       topAsns: Q.topAsns(from, to, { host, limit: 8 }),
       topDomains: Q.domains(from, to).slice(0, 10),
       latency: Q.latency(from, to, host),
-      kind: Q.topDim('kind', from, to, { host, limit: 4 }).rows,
+      kind: Q.topDim('kind', from, to, { host, limit: 4, totals: false }).rows,
     };
   });
 
@@ -86,18 +86,20 @@ export async function registerApi(app) {
     const { from, to } = windowOf(req.query);
     const host = req.query.host || null;
     const prev = { from: from - (to - from), to: from };
-    const top = (dim, limit = 10) => Q.topDim(dim, from, to, { host, limit });
+    // Only the page count and the referred-visit total are shown, so the
+    // other lists skip topDim's second, totals query.
+    const top = (dim, limit = 10, totals = false) => Q.topDim(dim, from, to, { host, limit, totals });
     return {
       window: { from, to },
       active: Q.activeVisitors(host),
       totals: Q.totals(from, to, host),
       previous: Q.totals(prev.from, prev.to, host),
       series: Q.series(from, to, host),
-      pages: top('page'),
+      pages: top('page', 10, true),
       entries: top('entry'),
       exits: top('exit'),
       channels: top('channel', 12),
-      referrers: top('refsite'),
+      referrers: top('refsite', 10, true),
       languages: top('lang'),
       broken: top('broken'),
       utm: Object.fromEntries(
@@ -165,7 +167,7 @@ export async function registerApi(app) {
         ['status', 'method', 'path', 'ip', 'ua', 'browser', 'os', 'device',
          'referer', 'proto', 'tls', 'cipher', 'ext', 'kind'].map((d) => [
           d,
-          Q.topDim(d, from, to, { host, limit: 25 }).rows,
+          Q.topDim(d, from, to, { host, limit: 25, totals: false }).rows,
         ])
       ),
       errorPaths: Q.errorPaths(from, to, host),

@@ -11,7 +11,7 @@
 import { getDb } from './db.js';
 import { config } from './config.js';
 import { logger } from './util/log.js';
-import { DAY } from './ingest/rollup.js';
+import { DAY, oldestOpenVisitHour } from './ingest/rollup.js';
 import { SALT_PREFIX, forgetSalts } from './ingest/visits.js';
 
 const log = logger('maintain');
@@ -22,15 +22,32 @@ function nowSec() {
   return Math.floor(Date.now() / 1000);
 }
 
-/** Fold hourly rows older than the hourly window into daily rows. */
+/**
+ * Hours before this (epoch seconds) are left alone by folding and compaction:
+ * a visit still open there will change its counters again, and those changes
+ * must land on the rows they were first added to. Only an old-log backfill
+ * puts open visits this far back.
+ */
+function settledBefore() {
+  return oldestOpenVisitHour() ?? Infinity;
+}
+
+/**
+ * Fold hourly rows older than the hourly window into daily rows. The day's
+ * visitor ids go at the same time: from then on rollup.visitors, exact for
+ * whole days, answers for that day (see seenVisitors in queries.js).
+ */
 function foldHourlyToDaily(db) {
-  const cutoff = nowSec() - config.retention.hourlyDays * DAY;
+  const cutoff = Math.min(nowSec() - config.retention.hourlyDays * DAY, settledBefore());
   const boundary = Math.floor(cutoff / DAY) * DAY;
 
   const pending = db
     .prepare(`SELECT COUNT(*) AS n FROM rollup WHERE gran = 'h' AND bucket < ?`)
     .get(boundary).n;
-  if (!pending) return 0;
+  if (!pending) {
+    db.prepare('DELETE FROM visitor_seen WHERE bucket < ?').run(boundary);
+    return 0;
+  }
 
   const fold = db.transaction(() => {
     db.prepare(
@@ -79,6 +96,7 @@ function foldHourlyToDaily(db) {
 
     db.prepare(`DELETE FROM rollup WHERE gran = 'h' AND bucket < ?`).run(boundary);
     db.prepare(`DELETE FROM dims   WHERE gran = 'h' AND bucket < ?`).run(boundary);
+    db.prepare('DELETE FROM visitor_seen WHERE bucket < ?').run(boundary);
   });
 
   fold();
@@ -91,7 +109,7 @@ function foldHourlyToDaily(db) {
  * folding everything else into a single "(other)" row so totals stay exact.
  */
 function compactDims(db) {
-  const cutoff = nowSec() - config.retention.dimCompactAfterDays * DAY;
+  const cutoff = Math.min(nowSec() - config.retention.dimCompactAfterDays * DAY, settledBefore());
   const topN = config.retention.dimTopN;
   const wide = [
     'path', 'ip', 'ua', 'referer',
@@ -192,31 +210,23 @@ function prune(db) {
     .prepare('DELETE FROM hosts WHERE host NOT IN (SELECT DISTINCT host FROM rollup)')
     .run().changes;
 
-  // Visit state. A visit can no longer grow after 30 quiet minutes, but its
-  // row also answers "has this visitor been here today?", so it stays a day.
+  // Visit state. A closed visit can no longer grow, but its row also answers
+  // "has this visitor been here today?", so it stays a day. One still open
+  // after a week means closing is stuck; it is not kept forever either.
   out.visits = db
-    .prepare('DELETE FROM visits WHERE touched < ?')
-    .run(Date.now() - 26 * 3_600_000).changes;
+    .prepare('DELETE FROM visits WHERE touched < ? AND (closed = 1 OR touched < ?)')
+    .run(Date.now() - 26 * 3_600_000, Date.now() - 7 * 86_400_000).changes;
 
   // Visitor salts, once no stored request from that day can still need one.
   // Afterwards that day's visitor ids cannot be recomputed from an address.
   const keepDays = Math.ceil(config.retention.rawHours / 24) + 2;
   const oldestDay = Math.floor(Date.now() / 86_400_000) - keepDays;
+  const dropSalt = db.prepare('DELETE FROM meta WHERE key = ?');
   out.salts = 0;
   for (const { key } of db.prepare('SELECT key FROM meta WHERE key LIKE ?').all(`${SALT_PREFIX}%`)) {
-    if (Number(key.slice(SALT_PREFIX.length)) < oldestDay) {
-      out.salts += db.prepare('DELETE FROM meta WHERE key = ?').run(key).changes;
-    }
+    if (Number(key.slice(SALT_PREFIX.length)) < oldestDay) out.salts += dropSalt.run(key).changes;
   }
   if (out.salts) forgetSalts();
-
-  // Exit pages are moved as visits grow, which can leave rows counting nothing.
-  out.emptyDims = db
-    .prepare(
-      `DELETE FROM dims WHERE gran IN ('h', 'd') AND dim = 'exit'
-          AND requests = 0 AND bytes = 0 AND errors = 0 AND dur_sum = 0`
-    )
-    .run().changes;
 
   out.sessions = db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now()).changes;
   out.logins = db
