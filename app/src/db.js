@@ -94,6 +94,33 @@ function migrate(db) {
     log.info('migration: added events.referer_host');
   }
 
+  if (!events.has('nav')) {
+    // Visitor analytics (1.2.0). Rows already stored are worked out from their
+    // raw log line, and grouped into visits, by the rollup loop
+    // (backfillVisits), so the Traffic page starts with the raw window's worth
+    // of history instead of empty.
+    for (const col of ['nav INTEGER', 'channel TEXT', 'lang TEXT', 'utm_source TEXT',
+      'utm_medium TEXT', 'utm_campaign TEXT', 'utm_term TEXT', 'utm_content TEXT']) {
+      db.exec(`ALTER TABLE events ADD COLUMN ${col}`);
+    }
+    const r = db.prepare('SELECT MIN(id) AS lo, MAX(id) AS hi FROM events').get();
+    if (r.hi) {
+      db.prepare(
+        `INSERT INTO meta(key, value) VALUES('backfill_visits', ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+      ).run(JSON.stringify({ next: r.lo, last: r.hi }));
+    }
+    log.info('migration: added visitor-analytics columns to events');
+  }
+
+  const rollup = columns('rollup');
+  for (const col of ['pageviews', 'visits', 'visitors', 'bounces', 'visit_ms']) {
+    if (!rollup.has(col)) {
+      db.exec(`ALTER TABLE rollup ADD COLUMN ${col} INTEGER NOT NULL DEFAULT 0`);
+      log.info(`migration: added rollup.${col}`);
+    }
+  }
+
   if (!columns('sessions').has('persistent')) {
     // "Keep me signed in". Existing sessions keep the idle timeout they were
     // created under.

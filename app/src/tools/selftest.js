@@ -1,12 +1,18 @@
 // Self-contained checks for the pure logic that is easy to get subtly wrong
-// and hard to notice: CIDR matching, IP normalisation, log parsing, and
-// reading the changelog. Touches no database, no network, no log files.
+// and hard to notice: CIDR matching, IP normalisation, log parsing, visitor
+// analytics and visits, and reading the changelog. Touches no database, no
+// network, no log files.
 //
 //   docker compose run --rm --no-deps app node src/tools/selftest.js
 
 import { cidrMatcher, isPrivateIp, normalizeIp, isIPv4 } from '../util/net.js';
 import { parseLine, latencyBucket, extensionOf, refererHost } from '../ingest/parser.js';
 import { parseUserAgent } from '../ingest/useragent.js';
+import {
+  isNavigation, isPageview, campaignOf, channelOf, isExternalReferer, languageOf, looksDisguised,
+} from '../ingest/traffic.js';
+import { Accumulator, hourBucket } from '../ingest/rollup.js';
+import { visitorHash } from '../ingest/visits.js';
 import { parseChangelog } from '../release.js';
 
 let failures = 0;
@@ -98,6 +104,12 @@ group('Caddy JSON access log parsing', () => {
       headers: {
         'User-Agent': ['Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0 Safari/537.36'],
         Referer: ['https://news.ycombinator.com/item?id=1'],
+        Accept: ['text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'],
+        'Accept-Language': ['en-GB,en;q=0.9'],
+        'Sec-Ch-Ua': ['"Chromium";v="131", "Not_A Brand";v="24"'],
+        'Sec-Fetch-Dest': ['document'],
+        'Sec-Fetch-Mode': ['navigate'],
+        'Sec-Fetch-Site': ['cross-site'],
       },
       tls: { version: 772, cipher_suite: 4865, proto: 'h2', server_name: 'example.com' },
     },
@@ -126,6 +138,10 @@ group('Caddy JSON access log parsing', () => {
   ok('browser detected', e.browser, 'Chrome 131');
   ok('os detected', e.os, 'Windows 10/11');
   ok('not a bot', e.bot, 0);
+  ok('a navigation', e.nav, 1);
+  ok('channel from the referrer', e.channel, 'Social');
+  ok('language from Accept-Language', e.lang, 'en-GB');
+  ok('a "utm" parameter is not a UTM tag', e.utm_source, null);
 
   ok('rejects malformed JSON', parseLine('not json').reason, 'json');
   ok('skips non-access entries', parseLine('{"level":"info","msg":"serving"}').reason, 'not-access');
@@ -162,6 +178,148 @@ group('Derived fields', () => {
   ok('googlebot is a bot', parseUserAgent('Googlebot/2.1 (+http://www.google.com/bot.html)').bot, 1);
   ok('firefox is not', parseUserAgent('Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0').bot, 0);
   ok('mobile device class', parseUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148').device, 'Mobile');
+});
+
+group('Visitor analytics', () => {
+  const chrome = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0 Safari/537.36';
+  const nav = (headers, extra = {}) =>
+    isNavigation({ method: 'GET', bot: 0, headers, respHeaders: null, ...extra });
+
+  ok('document load is a navigation', nav({ 'Sec-Fetch-Dest': ['document'] }), true);
+  ok('script load is not', nav({ 'Sec-Fetch-Dest': ['script'] }), false);
+  ok('fetch() is not', nav({ 'Sec-Fetch-Dest': ['empty'], Accept: ['text/html'] }), false);
+  ok('iframe is not', nav({ 'Sec-Fetch-Dest': ['iframe'] }), false);
+  ok('prefetch is not', nav({ 'Sec-Fetch-Dest': ['document'], 'Sec-Purpose': ['prefetch;prerender'] }), false);
+  ok('POST is not', nav({ 'Sec-Fetch-Dest': ['document'] }, { method: 'POST' }), false);
+  ok('bot is not', nav({ 'Sec-Fetch-Dest': ['document'] }, { bot: 1 }), false);
+  ok('old browser asking for HTML is', nav({ Accept: ['text/html,*/*'] }), true);
+  ok('old browser given a PDF is not',
+    nav({ Accept: ['text/html,*/*'] }, { respHeaders: { 'Content-Type': ['application/pdf'] } }), false);
+  ok('200 navigation is a page view', isPageview({ nav: 1, status: 200 }), true);
+  ok('304 navigation is a page view', isPageview({ nav: 1, status: 304 }), true);
+  ok('404 navigation is not', isPageview({ nav: 1, status: 404 }), false);
+  ok('redirect is not', isPageview({ nav: 1, status: 301 }), false);
+
+  ok('UTM tags read', campaignOf('utm_source=Newsletter&utm_medium=Email&utm_campaign=Launch%20Week'), {
+    utm_source: 'newsletter', utm_medium: 'email', utm_campaign: 'Launch Week', utm_term: null, utm_content: null,
+  });
+  ok('ref stands in for utm_source', campaignOf('ref=producthunt').utm_source, 'producthunt');
+  ok('gclid implies google / cpc', [campaignOf('gclid=abc').utm_source, campaignOf('gclid=abc').utm_medium], ['google', 'cpc']);
+  ok('fbclid implies facebook, not paid', campaignOf('fbclid=abc').utm_medium, null);
+  ok('explicit tags beat click IDs', campaignOf('utm_source=meta&fbclid=abc').utm_source, 'meta');
+  ok('no query', campaignOf(null).utm_source, null);
+
+  const ch = (refHost, query = null, host = 'example.com') => channelOf({ host, refHost, utm: campaignOf(query) });
+  ok('no referrer is direct', ch(null), 'Direct');
+  ok('own site is internal', ch('www.example.com'), 'Internal');
+  ok('google is search', ch('www.google.co.uk'), 'Search');
+  ok('android google app is search', ch('com.google.android.googlequicksearchbox'), 'Search');
+  ok('gemini is an AI assistant, not search', ch('gemini.google.com'), 'AI assistant');
+  ok('chatgpt utm_source is an AI assistant', ch(null, 'utm_source=chatgpt.com'), 'AI assistant');
+  ok('t.co is social', ch('t.co'), 'Social');
+  ok('l.facebook.com is social', ch('l.facebook.com'), 'Social');
+  ok('webmail is email', ch('mail.google.com'), 'Email');
+  ok('other sites are referrals', ch('blog.someone.dev'), 'Referral');
+  ok('cpc is paid even from google', ch('www.google.com', 'gclid=1'), 'Paid');
+  ok('newsletter medium is email', ch(null, 'utm_medium=newsletter'), 'Email');
+  ok('unknown tagged link is a campaign', ch(null, 'utm_campaign=spring'), 'Campaign');
+  ok('external referrer', isExternalReferer('example.com', 'other.org'), true);
+  ok('www is not external', isExternalReferer('example.com', 'www.example.com'), false);
+
+  ok('language with region', languageOf('en-us,en;q=0.9'), 'en-US');
+  ok('language with script', languageOf('zh-hant-tw'), 'zh-Hant');
+  ok('bare language', languageOf('fr'), 'fr');
+  ok('wildcard is no language', languageOf('*'), null);
+
+  const tls = { version: 772 };
+  const bare = { 'User-Agent': [chrome], Accept: ['*/*'], 'Accept-Encoding': ['gzip'] };
+  ok('Chrome without Sec-Fetch or client hints is disguised', looksDisguised(chrome, bare, tls), true);
+  ok('real Chrome is not', looksDisguised(chrome, { ...bare, 'Sec-Fetch-Mode': ['navigate'] }, tls), false);
+  ok('not judged over plain HTTP', looksDisguised(chrome, bare, null), false);
+  ok('not judged on a stripped log', looksDisguised(chrome, { 'User-Agent': [chrome] }, tls), false);
+  ok('Chrome on iOS is not', looksDisguised('Mozilla/5.0 (iPhone) CriOS/131.0 Mobile', bare, tls), false);
+  ok('Firefox is not', looksDisguised('Mozilla/5.0 (X11; rv:133.0) Gecko/20100101 Firefox/133.0', bare, tls), false);
+
+  const disguised = parseLine(
+    JSON.stringify({
+      ts: 1757212800,
+      request: { host: 'a.example', method: 'GET', uri: '/', headers: bare, tls },
+      status: 200,
+    })
+  ).event;
+  ok('disguised client counted as a bot', [disguised.bot, disguised.browser], [1, 'Disguised bot']);
+  ok('and not as a page view', disguised.nav, 0);
+});
+
+group('Visits', () => {
+  // The visit state the database would hold, in memory.
+  const rows = [];
+  const store = {
+    salt: (day) => `salt-${day}`,
+    find: (visitor, lo, hi) => {
+      const r = rows
+        .filter((x) => x.visitor === visitor && x.end_ts >= lo && x.start_ts <= hi)
+        .sort((a, b) => a.end_ts - b.end_ts)[0];
+      return r ? { ...r } : null;
+    },
+    seen: (visitor) => rows.some((x) => x.visitor === visitor),
+    insert: (v) => rows.push({ ...v, id: rows.length + 1 }),
+    update: (v) => Object.assign(rows.find((x) => x.id === v.id), {
+      end_ts: v.end_ts, pageviews: v.pageviews, exit_path: v.exit_path,
+    }),
+  };
+
+  const T0 = Date.UTC(2026, 9, 10, 12, 0, 0);
+  const MIN = 60_000;
+  const view = (ts, path, extra = {}) => ({
+    ts, host: 'example.com', ip: '203.0.113.9', ua: 'Browser/1', path, status: 200, nav: 1,
+    channel: 'Search', referer_host: 'www.google.com', lang: 'en-US', utm_source: null,
+    bytes_out: 0, dur_ms: 0, ...extra,
+  });
+  const batch = (...views) => {
+    const acc = new Accumulator(store);
+    for (const v of views) acc.visit(hourBucket(v.ts), v.host, v);
+    acc.sessions.persist();
+    return acc;
+  };
+  const rowAt = (acc, ts) => [...acc.rollups.values()].find((r) => r.bucket === hourBucket(ts)) ?? {};
+  const dimAt = (acc, dim, value) => {
+    const d = [...acc.dims.values()].find((x) => x.dim === dim && x.value === value);
+    return d ? [d.requests, d.bytes, d.errors, d.dur_sum] : [0, 0, 0, 0];
+  };
+
+  const a = batch(view(T0, '/'), view(T0 + MIN, '/pricing'));
+  const r = rowAt(a, T0);
+  ok('two page views, one visit', [r.pageviews, r.visits, r.visitors], [2, 1, 1]);
+  ok('not a bounce, one minute long', [r.bounces, r.visit_ms], [0, MIN]);
+  ok('entry page', dimAt(a, 'entry', '/'), [1, 2, 0, MIN]);
+  ok('exit page moved on', [dimAt(a, 'exit', '/')[0], dimAt(a, 'exit', '/pricing')[0]], [0, 1]);
+  ok('visit credited to its channel once', dimAt(a, 'channel', 'Search'), [1, 2, 0, MIN]);
+  ok('external referrer recorded', dimAt(a, 'refsite', 'www.google.com')[0], 1);
+
+  // A later batch extends the stored visit by the difference only.
+  const b = batch(view(T0 + 10 * MIN, '/signup', { channel: 'Internal', referer_host: 'example.com' }));
+  const rb = rowAt(b, T0);
+  ok('extension adds no visit', [rb.visits ?? 0, rb.visitors ?? 0, rb.bounces ?? 0], [0, 0, 0]);
+  ok('extension lengthens the visit', rb.visit_ms, 9 * MIN);
+  ok('exit page moves across batches', [dimAt(b, 'exit', '/pricing')[0], dimAt(b, 'exit', '/signup')[0]], [-1, 1]);
+  ok('channel stays the landing channel', [dimAt(b, 'channel', 'Search')[0], dimAt(b, 'channel', 'Internal')[0]], [0, 0]);
+
+  const c = batch(view(T0 + 2 * 60 * MIN, '/'));
+  ok('after 30 quiet minutes, a new visit by a returning visitor',
+    [rowAt(c, T0 + 2 * 60 * MIN).visits, rowAt(c, T0 + 2 * 60 * MIN).visitors, rowAt(c, T0 + 2 * 60 * MIN).bounces], [1, 0, 1]);
+
+  const d = batch(view(T0 + 5 * MIN, '/', { ua: 'Other/2' }));
+  ok('another browser is another visitor', rowAt(d, T0).visitors, 1);
+
+  const e = batch(view(T0 + 24 * 60 * MIN, '/'));
+  ok('the next day is a new visitor', rowAt(e, T0 + 24 * 60 * MIN).visitors, 1);
+
+  const f = batch(view(T0 + 3 * 60 * MIN, '/', { status: 404 }), view(T0 + 3 * 60 * MIN, '/x', { nav: 0 }));
+  ok('only page views make visits', rowAt(f, T0 + 3 * 60 * MIN).visits ?? 0, 0);
+
+  ok('visitor id is stable', visitorHash('s', view(T0, '/')), visitorHash('s', view(T0 + MIN, '/a')));
+  ok('and differs by salt', visitorHash('s', view(T0, '/')) === visitorHash('t', view(T0, '/')), false);
 });
 
 group('Changelog', () => {

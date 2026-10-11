@@ -130,6 +130,49 @@ export function TrafficChart({ series, height = 220 }) {
   );
 }
 
+/** Page views and visitors over time. */
+export function PageviewChart({ series, height = 220 }) {
+  const points = series?.points ?? [];
+  if (!points.length) return <Empty />;
+  const step = series.step;
+  const data = points.map((p) => ({
+    label: axisTime(p.bucket, step),
+    span: bucketSpan(p.bucket, step),
+    filling: isFilling(p.bucket, step),
+    views: p.pageviews ?? 0,
+    visitors: p.visitors ?? 0,
+  }));
+  return (
+    <>
+      <ChartCaption series={series} what="Page views and visitors" />
+      <ResponsiveContainer width="100%" height={height}>
+        <AreaChart data={data} margin={{ top: 4, right: 4, left: -14, bottom: 0 }}>
+          <defs>
+            <linearGradient id="g-pv" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="var(--accent)" stopOpacity={0.5} />
+              <stop offset="100%" stopColor="var(--accent)" stopOpacity={0.04} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid {...GRID} vertical={false} />
+          <XAxis dataKey="label" {...AXIS} tickLine={false} axisLine={false} minTickGap={40} />
+          <YAxis {...AXIS} tickLine={false} axisLine={false} tickFormatter={compact} width={46}
+                 allowDecimals={false} />
+          <Tooltip
+            {...tooltipStyle}
+            labelFormatter={(_, payload) => spanLabel(payload)}
+            formatter={(v, n) => [num(v), n]}
+          />
+          <Legend wrapperStyle={{ fontSize: 11.5, paddingTop: 6 }} iconType="circle" iconSize={7} />
+          <Area type="monotone" dataKey="views" name="Page views" stroke="var(--accent)"
+                strokeWidth={1.5} fill="url(#g-pv)" isAnimationActive={false} />
+          <Area type="monotone" dataKey="visitors" name="Visitors" stroke="var(--violet)"
+                strokeWidth={1.5} fill="none" isAnimationActive={false} />
+        </AreaChart>
+      </ResponsiveContainer>
+    </>
+  );
+}
+
 /** Bandwidth served over the same buckets. */
 export function BandwidthChart({ series, height = 180 }) {
   const points = series?.points ?? [];

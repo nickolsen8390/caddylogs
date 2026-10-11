@@ -11,7 +11,11 @@
 // below tolerates the known variants rather than assuming one shape.
 
 import { parseUserAgent } from './useragent.js';
+import {
+  header, isNavigation, campaignOf, channelOf, languageOf, looksDisguised,
+} from './traffic.js';
 import { normalizeIp } from '../util/net.js';
+import { config } from '../config.js';
 
 const TLS_VERSIONS = {
   768: 'SSL 3.0',
@@ -36,22 +40,6 @@ const TLS_CIPHERS = {
   47: 'RSA_AES_128_CBC_SHA',
   53: 'RSA_AES_256_CBC_SHA',
 };
-
-/** Header lookup that ignores case and unwraps Caddy's array-valued headers. */
-function header(headers, name) {
-  if (!headers || typeof headers !== 'object') return null;
-  const direct = headers[name];
-  const v = direct !== undefined ? direct : findCaseInsensitive(headers, name);
-  if (v === undefined || v === null) return null;
-  const s = Array.isArray(v) ? v[0] : v;
-  return typeof s === 'string' && s.length ? s : null;
-}
-
-function findCaseInsensitive(obj, name) {
-  const want = name.toLowerCase();
-  for (const k of Object.keys(obj)) if (k.toLowerCase() === want) return obj[k];
-  return undefined;
-}
 
 /** Caddy writes ts as a float epoch by default, RFC3339 when configured. */
 function parseTs(ts) {
@@ -208,14 +196,23 @@ export function parseLine(line) {
   // client_ip is the header-resolved address when Caddy is configured with
   // `trusted_proxies`; remote_ip is the raw socket peer.
   const ip = normalizeIp(req.client_ip ?? req.remote_ip ?? req.remote_addr);
-  const uaInfo = parseUserAgent(ua);
+  let uaInfo = parseUserAgent(ua);
+  if (!uaInfo.bot && config.bots.headerCheck && looksDisguised(ua, headers, tls)) {
+    uaInfo = { browser: 'Disguised bot', os: 'Bot', device: 'Bot', bot: 1 };
+  }
+
+  const method = String(req.method || 'GET').toUpperCase().slice(0, 16);
+  const refHost = referer ? refererHost(referer) : null;
+  const visit = deriveVisit({
+    host, method, query, refHost, headers, bot: uaInfo.bot, respHeaders: o.resp_headers,
+  });
 
   return {
     ok: true,
     event: {
       ts,
       host,
-      method: String(req.method || 'GET').toUpperCase().slice(0, 16),
+      method,
       path,
       query,
       status,
@@ -227,7 +224,7 @@ export function parseLine(line) {
       referer: referer ? referer.slice(0, 1024) : null,
       // Stored separately so "who links here" drill-downs are an indexed
       // equality match instead of a LIKE over the full URL.
-      referer_host: referer ? refererHost(referer) : null,
+      referer_host: refHost,
       proto: String(tls?.proto || req.proto || '').slice(0, 16) || null,
       tls_version: tlsVersion,
       tls_cipher: tlsCipher,
@@ -235,7 +232,35 @@ export function parseLine(line) {
       os: uaInfo.os,
       device: uaInfo.device,
       bot: uaInfo.bot,
+      ...visit,
       raw: line.length > 16384 ? line.slice(0, 16384) : line,
     },
   };
 }
+
+/**
+ * The visitor-analytics columns for one request. Campaign, channel and
+ * language are only worked out for navigations: an image or an API call
+ * carries the page's referrer, not a visit of its own.
+ */
+export function deriveVisit({ host, method, query, refHost, headers, bot, respHeaders }) {
+  const nav = isNavigation({ method, bot, headers, respHeaders }) ? 1 : 0;
+  if (!nav) {
+    return {
+      nav, channel: null, lang: null,
+      utm_source: null, utm_medium: null, utm_campaign: null, utm_term: null, utm_content: null,
+    };
+  }
+  const utm = campaignOf(query);
+  return {
+    nav,
+    channel: channelOf({ host, refHost, utm }),
+    lang: languageOf(header(headers, 'Accept-Language')),
+    ...utm,
+  };
+}
+
+/** Field names deriveVisit() returns, in the order the events table holds them. */
+export const VISIT_COLUMNS = [
+  'nav', 'channel', 'lang', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+];

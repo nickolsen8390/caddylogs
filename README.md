@@ -13,6 +13,13 @@ included compose file runs Caddy and the interface together.
   applied with a zero-downtime reload. Past versions can be restored.
 - **Dashboard** — hits, 2xx vs non-2xx, top talkers, top URLs, bandwidth,
   latency percentiles, country map, top networks, browsers, referrers.
+- **Traffic** — visitor analytics from the access log alone, with no tracking
+  script: visitors, visits, page views (browsers loading a page, not assets or
+  API calls), bounce rate, visit duration, pages per visit and who is active
+  now; channels (search, social, AI assistants, email, paid, referral,
+  direct), entry, exit and top pages, referring sites, UTM campaigns and ad
+  click IDs, visitor languages, and broken links people followed to a 404.
+  Per domain or across all of them.
 - **Domains** — every host that received a request Caddy actually served, with
   counters; click through for user agents, source countries and ASNs, a world
   heatmap, protocol/TLS breakdown, slowest and most error-prone URLs.
@@ -260,6 +267,7 @@ Everything lives in one SQLite file on the `data` volume, in three tiers:
 | Tier | Contents | Governed by |
 |---|---|---|
 | `events` | individual requests incl. the raw JSON line | `RAW_RETENTION_HOURS` (48h), capped by `RAW_MAX_ROWS` |
+| `visits` | visits that may still grow (working state for the Traffic page) | a day after a visit's last page view |
 | `rollup` / `dims` at hourly granularity | every counter and dimension | `HOURLY_RETENTION_DAYS` (45d) |
 | the same tables at daily granularity | folded from hourly | `RETENTION_DAYS` (365d) |
 
@@ -276,6 +284,48 @@ so totals stay exact while storage stays bounded.
 
 Maintenance runs hourly inside the `ingest` container. Nothing external to
 schedule.
+
+### How the Traffic page counts page views
+
+A request is a page view when a browser navigated to it and got the page: a
+`GET` with `Sec-Fetch-Dest: document` (or, from browsers too old to send that,
+one asking for HTML and getting it back), answered 2xx or 304, from a client
+that is not a bot, and not a prefetch.
+
+**Visitors** are told apart by a hash of the site, the client address, the
+User-Agent and a random salt that changes every UTC day — the method
+Plausible uses. The same person on two days counts as two visitors, so
+"visitors" over a week is the sum of each day's visitors; and two people
+behind one address with the same browser count as one. Each day's salt is
+deleted once no stored request still needs it, after which that day's
+visitor ids can no longer be recomputed from an address. (The addresses
+themselves are still kept for the dashboard's per-address statistics.)
+
+A **visit** is one visitor's page views with no gap longer than 30 minutes; it
+also ends at midnight UTC, when the visitor id changes. A visit of one page is
+a bounce, and its duration is the time from its first page view to its last —
+so a bounce counts as zero seconds, as in other analytics tools. Visits are
+counted the moment they start, in the hour they started, and corrected as they
+grow, so the numbers are live.
+
+Channels, referrers, campaigns, languages, entry and exit pages count
+**visits**, credited to the page each visit started on: a visit from a search
+engine that goes on to read five pages is one Search visit. Top pages and
+broken links count page views.
+
+UTM tags come from the landing URL's query string. `source` and `ref` stand in
+for `utm_source`, and ad click IDs (`gclid`, `msclkid`, `fbclid`, `ttclid`, …)
+for untagged ad links. A visit that starts from another page of the same site
+(after 30 idle minutes, say) is in the **Internal** channel; your own site
+never appears as a referrer.
+
+What a server log cannot see: route changes inside a single-page app after
+its first load, pages served from a CDN cache without reaching Caddy, and
+screen sizes.
+
+All of this starts counting when you upgrade to 1.2.0. Requests still stored
+from before the upgrade (`RAW_RETENTION_HOURS`) are counted too, in the
+background, in the first minutes after it starts.
 
 ### What drill-down can and cannot reach
 
@@ -487,6 +537,7 @@ likely to change:
 | `HOURLY_RETENTION_DAYS` | `45` | how long hour-level detail is kept |
 | `RAW_RETENTION_HOURS` | `48` | how long individual requests are kept |
 | `IGNORE_HOSTS` / `IGNORE_CIDRS` | — | traffic never recorded (healthchecks, monitoring) |
+| `BOT_HEADER_CHECK` | `true` | count a "Chrome" that sends no Sec-Fetch / client-hint headers as a bot |
 | `STREAM_POLL_MS` | `400` | live-tail latency |
 | `INGEST_BACKFILL` | `true` | read existing logs from the start on first run |
 

@@ -20,6 +20,7 @@ const KEY_ALIASES = {
   browser: 'browser', os: 'os', device: 'device',
   proto: 'proto', tls: 'tls', ext: 'ext',
   bot: 'bots', bots: 'bots',
+  channel: 'channel', lang: 'lang', language: 'lang', campaign: 'utm_campaign',
 };
 
 /**

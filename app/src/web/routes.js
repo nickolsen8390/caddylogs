@@ -16,6 +16,8 @@ const DAY = 86_400_000;
 const DIMS = new Set([
   'status', 'method', 'path', 'ip', 'ua', 'browser', 'os', 'device',
   'country', 'asn', 'referer', 'proto', 'tls', 'cipher', 'ext', 'lat', 'kind',
+  'page', 'entry', 'exit', 'channel', 'refsite', 'lang', 'broken',
+  'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
 ]);
 
 const PRESETS = {
@@ -75,6 +77,32 @@ export async function registerApi(app) {
       topDomains: Q.domains(from, to).slice(0, 10),
       latency: Q.latency(from, to, host),
       kind: Q.topDim('kind', from, to, { host, limit: 4 }).rows,
+    };
+  });
+
+  // Visitor analytics. `pages` and `broken` count page views; everything
+  // else counts visits, credited to the page each visit started on.
+  app.get('/api/traffic', rl, async (req) => {
+    const { from, to } = windowOf(req.query);
+    const host = req.query.host || null;
+    const prev = { from: from - (to - from), to: from };
+    const top = (dim, limit = 10) => Q.topDim(dim, from, to, { host, limit });
+    return {
+      window: { from, to },
+      active: Q.activeVisitors(host),
+      totals: Q.totals(from, to, host),
+      previous: Q.totals(prev.from, prev.to, host),
+      series: Q.series(from, to, host),
+      pages: top('page'),
+      entries: top('entry'),
+      exits: top('exit'),
+      channels: top('channel', 12),
+      referrers: top('refsite'),
+      languages: top('lang'),
+      broken: top('broken'),
+      utm: Object.fromEntries(
+        ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content'].map((d) => [d, top(d)])
+      ),
     };
   });
 

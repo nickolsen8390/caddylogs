@@ -25,6 +25,27 @@ const DIM_TO_PARAM = {
   lat: 'lat',
 };
 
+/**
+ * Visitor-analytics dimensions resolve to the page loads carrying that value:
+ * [request-search parameter, extra filters]. For the visit dimensions
+ * (channel, referrer, campaign, language, entry page) those are mostly the
+ * page views that started each visit.
+ */
+const PAGEVIEW_DIMS = {
+  page: ['path', { pageview: 1 }],
+  entry: ['path', { pageview: 1 }],
+  exit: ['path', { pageview: 1 }],
+  refsite: ['referer', { pageview: 1 }],
+  channel: ['channel', { pageview: 1 }],
+  lang: ['lang', { pageview: 1 }],
+  utm_source: ['utm_source', { pageview: 1 }],
+  utm_medium: ['utm_medium', { pageview: 1 }],
+  utm_campaign: ['utm_campaign', { pageview: 1 }],
+  utm_term: ['utm_term', { pageview: 1 }],
+  utm_content: ['utm_content', { pageview: 1 }],
+  broken: ['path', { status: '404' }],
+};
+
 /** Dimensions that cannot be resolved back to individual requests. */
 const NOT_DRILLABLE = new Set(['(other)']);
 
@@ -59,6 +80,11 @@ export function drillTo(dim, value, context = {}) {
     return `/requests${qs({ asn: '0', host: context.host, range: context.range })}`;
   }
 
+  if (PAGEVIEW_DIMS[dim]) {
+    const [key, extra] = PAGEVIEW_DIMS[dim];
+    return `/requests${qs({ [key]: v, ...extra, host: context.host, range: context.range })}`;
+  }
+
   const param = DIM_TO_PARAM[dim];
   if (!param) return null;
   return `/requests${qs({ [param]: v, host: context.host, range: context.range })}`;
@@ -84,6 +110,14 @@ export const FILTER_LABELS = {
   ext: 'File type',
   lat: 'Latency',
   bots: 'Traffic',
+  pageview: 'Page views',
+  channel: 'Channel',
+  lang: 'Language',
+  utm_source: 'UTM source',
+  utm_medium: 'UTM medium',
+  utm_campaign: 'UTM campaign',
+  utm_term: 'UTM term',
+  utm_content: 'UTM content',
   q: 'Search',
   uaq: 'Agent contains',
   pathq: 'URL contains',
@@ -97,6 +131,7 @@ export const FILTER_KEYS = Object.keys(FILTER_LABELS);
 /** Display form for a filter value (some are stored as codes). */
 export function filterValueLabel(key, value) {
   if (key === 'bots') return value === 'only' ? 'bots only' : 'humans only';
+  if (key === 'pageview') return 'only';
   if (key === 'asn' && String(value) === '0') return 'unresolved';
   if (key === 'minDur') return `${value} ms`;
   if (key === 'from' || key === 'to') return new Date(Number(value)).toLocaleString();

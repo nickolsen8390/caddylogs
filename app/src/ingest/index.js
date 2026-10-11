@@ -21,10 +21,14 @@ function prep() {
     insert: db.prepare(
       `INSERT INTO events (ts, host, method, path, query, status, bytes_out, bytes_in,
                            dur_ms, ip, ua, referer, proto, tls_version, tls_cipher,
-                           browser, os, device, bot, country, asn, as_org, referer_host, rolled, raw)
+                           browser, os, device, bot, country, asn, as_org, referer_host, rolled, raw,
+                           nav, channel, lang, utm_source, utm_medium, utm_campaign, utm_term,
+                           utm_content)
        VALUES (@ts, @host, @method, @path, @query, @status, @bytes_out, @bytes_in,
                @dur_ms, @ip, @ua, @referer, @proto, @tls_version, @tls_cipher,
-               @browser, @os, @device, @bot, @country, @asn, @as_org, @referer_host, 0, @raw)`
+               @browser, @os, @device, @bot, @country, @asn, @as_org, @referer_host, 0, @raw,
+               @nav, @channel, @lang, @utm_source, @utm_medium, @utm_campaign, @utm_term,
+               @utm_content)`
     ),
     stats: db.prepare(
       `INSERT INTO ingest_stats (day, lines, parsed, skipped, malformed)

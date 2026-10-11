@@ -52,7 +52,18 @@ CREATE TABLE IF NOT EXISTS events (
   as_org      TEXT,
   rolled      INTEGER NOT NULL DEFAULT 0,
   referer_host TEXT,
-  raw         TEXT
+  raw         TEXT,
+  -- Visitor analytics (ingest/traffic.js). nav = 1 for a browser navigating
+  -- to a page; NULL only on rows written before these columns existed.
+  -- The rest are set on navigations only.
+  nav          INTEGER,
+  channel      TEXT,
+  lang         TEXT,
+  utm_source   TEXT,
+  utm_medium   TEXT,
+  utm_campaign TEXT,
+  utm_term     TEXT,
+  utm_content  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts        ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_events_host_ts   ON events(host, ts);
@@ -76,13 +87,27 @@ CREATE TABLE IF NOT EXISTS rollup (
   c4xx      INTEGER NOT NULL DEFAULT 0,
   c5xx      INTEGER NOT NULL DEFAULT 0,
   bots      INTEGER NOT NULL DEFAULT 0,
+  pageviews INTEGER NOT NULL DEFAULT 0,
+  -- Visits are counted in the hour they started (ingest/visits.js).
+  visits    INTEGER NOT NULL DEFAULT 0,
+  visitors  INTEGER NOT NULL DEFAULT 0,  -- a visitor's first visit of the UTC day
+  bounces   INTEGER NOT NULL DEFAULT 0,  -- visits of a single page view
+  visit_ms  INTEGER NOT NULL DEFAULT 0,  -- first to last page view, summed
   PRIMARY KEY (bucket, gran, host)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS idx_rollup_scan ON rollup(gran, bucket);
 
 -- Generic dimension counters. One row per distinct value per bucket per host.
 -- dim ∈ status | method | path | ip | ua | browser | os | device | country |
---       asn | referer | proto | tls | cipher | ext | lat
+--       asn | referer | proto | tls | cipher | ext | lat | kind
+-- and `page`, counting page views only, and `broken`: paths that answered
+-- 404 to a browser following a link.
+--
+-- Visit dimensions count visits, in the hour each visit started, and use the
+-- columns differently: requests = visits, bytes = page views in those visits,
+-- errors = bounces, dur_sum = visit duration in ms.
+--       entry | exit | channel | refsite | lang | utm_source | utm_medium |
+--       utm_campaign | utm_term | utm_content
 CREATE TABLE IF NOT EXISTS dims (
   bucket   INTEGER NOT NULL,
   gran     TEXT    NOT NULL,
@@ -97,6 +122,33 @@ CREATE TABLE IF NOT EXISTS dims (
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS idx_dims_scan  ON dims(gran, dim, bucket);
 CREATE INDEX IF NOT EXISTS idx_dims_host  ON dims(gran, dim, host, bucket);
+
+-- Visits that may still grow, so a later page view can extend the right one
+-- (ingest/visits.js). Statistics are in rollup/dims; this is working state,
+-- pruned a day after a visit was last touched.
+CREATE TABLE IF NOT EXISTS visits (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  visitor      TEXT    NOT NULL,   -- hash of the day's salt, host, address, User-Agent
+  host         TEXT    NOT NULL,
+  start_ts     INTEGER NOT NULL,   -- epoch ms of the first page view
+  end_ts       INTEGER NOT NULL,   -- epoch ms of the last page view
+  pageviews    INTEGER NOT NULL DEFAULT 1,
+  entry_path   TEXT,
+  exit_path    TEXT,
+  first        INTEGER NOT NULL DEFAULT 0,  -- the visitor's first visit that day
+  channel      TEXT,
+  refsite      TEXT,
+  lang         TEXT,
+  utm_source   TEXT,
+  utm_medium   TEXT,
+  utm_campaign TEXT,
+  utm_term     TEXT,
+  utm_content  TEXT,
+  touched      INTEGER NOT NULL DEFAULT 0   -- wall clock of the last change
+);
+CREATE INDEX IF NOT EXISTS idx_visits_visitor ON visits(visitor, end_ts);
+CREATE INDEX IF NOT EXISTS idx_visits_end     ON visits(end_ts);
+CREATE INDEX IF NOT EXISTS idx_visits_touched ON visits(touched);
 
 -- First/last seen per served host, for the domains list.
 CREATE TABLE IF NOT EXISTS hosts (

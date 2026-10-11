@@ -4,6 +4,43 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org): a new major version (2.0.0) is the
 only kind that can require you to change anything when upgrading.
 
+## [1.2.0] — 2026-10-10
+
+### Added
+
+- A **Traffic** page with visitor analytics worked out from Caddy's access
+  log, with no tracking script: who visited, what they read, and where they
+  came from.
+  - Page views count browsers loading a page, not every request: assets, API
+    calls, frames, prefetches and bots are left out.
+  - Visitors and visits: unique visitors per day, visits (page views with no
+    gap over 30 minutes), bounce rate, visit duration, pages per visit, and
+    how many visitors are active right now. Visitors are told apart by a
+    salted hash that changes daily, the way Plausible does it.
+  - Channels: Search, Social, AI assistant (ChatGPT, Perplexity, Claude,
+    Gemini, Copilot…), Email, Paid, Referral, Campaign, Internal, Direct —
+    counted per visit, by the page the visit started on.
+  - Entry, exit and top pages, referring sites (without your own site in the
+    list), and visitor languages.
+  - UTM campaigns: source, medium, campaign, term and content. `source` and
+    `ref` parameters and ad click IDs (`gclid`, `msclkid`, `fbclid`…) are
+    read too.
+  - Broken links: pages that answered 404 to someone following a link.
+  - Campaigns, referrers and channels show each one's visits, bounce rate
+    and time on site.
+  - Every entry opens the page views behind it in the request explorer.
+  Pick a domain on the page, or use the new Traffic button on a domain's page.
+  Requests still stored from before the upgrade are counted in the background
+  after it starts, so the page is not empty to begin with.
+- Clients claiming to be Chrome, Edge or another Chromium browser that send
+  none of the headers those browsers always send over HTTPS are now counted
+  as bots ("Disguised bot"). Set `BOT_HEADER_CHECK=false` to turn this off.
+
+### Fixed
+
+- Filtering requests by TLS cipher (clicking a cipher on a domain's Protocol
+  & TLS tab) failed with an error instead of listing the requests.
+
 ## [1.1.1] — 2026-10-01
 
 ### Changed
@@ -97,6 +134,7 @@ First public release.
   filesystem, no Linux capabilities and `no-new-privileges`.
 - Works on phones: slide-in menu, readable request lists, folding filters.
 
+[1.2.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.2.0
 [1.1.1]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.1.1
 [1.1.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.1.0
 [1.0.3]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.0.3

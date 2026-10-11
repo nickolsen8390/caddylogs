@@ -55,6 +55,10 @@ export default function DomainDetail({ ctx }) {
         <div className="hstack">
           <Link to="/domains" className="btn sm">← Domains</Link>
           <h2 style={{ margin: 0, fontSize: 16, fontWeight: 640 }}>{host}</h2>
+          <Link to={`/traffic?host=${encodeURIComponent(host)}`} className="btn sm"
+                title="Page views, channels, referrers and campaigns for this domain">
+            Traffic
+          </Link>
           {ctx.features?.caddy && (
             <Link to={`/caddy?q=${encodeURIComponent(host)}`} className="btn sm" title="Find this domain in the Caddy configuration">
               Configure

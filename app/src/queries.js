@@ -13,6 +13,7 @@
 import { getDb } from './db.js';
 import { config } from './config.js';
 import { isPrivateIp } from './util/net.js';
+import { PAGEVIEW_SQL } from './ingest/traffic.js';
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
@@ -65,6 +66,9 @@ export function totals(fromMs, toMs, host = null) {
               COALESCE(SUM(c1xx),0) AS c1xx, COALESCE(SUM(c2xx),0) AS c2xx,
               COALESCE(SUM(c3xx),0) AS c3xx, COALESCE(SUM(c4xx),0) AS c4xx,
               COALESCE(SUM(c5xx),0) AS c5xx, COALESCE(SUM(bots),0) AS bots,
+              COALESCE(SUM(pageviews),0) AS pageviews,
+              COALESCE(SUM(visits),0) AS visits, COALESCE(SUM(visitors),0) AS visitors,
+              COALESCE(SUM(bounces),0) AS bounces, COALESCE(SUM(visit_ms),0) AS visit_ms,
               COUNT(DISTINCT host) AS hosts
          FROM rollup
         WHERE bucket >= @from AND bucket < @to ${hostClause(host)}`
@@ -85,7 +89,19 @@ export function totals(fromMs, toMs, host = null) {
     avg_ms: row.requests ? row.dur_sum / row.requests : 0,
     success_rate: row.requests ? ok / row.requests : 0,
     error_rate: row.requests ? (row.c4xx + row.c5xx) / row.requests : 0,
+    bounce_rate: row.visits ? row.bounces / row.visits : null,
+    avg_visit_ms: row.visits ? row.visit_ms / row.visits : null,
+    pages_per_visit: row.visits ? row.pageviews / row.visits : null,
   };
+}
+
+/** Visitors with a page view in the last few minutes. */
+export function activeVisitors(host = null, minutes = 5) {
+  const params = { since: Date.now() - minutes * 60_000 };
+  if (host) params.host = host;
+  return getDb()
+    .prepare(`SELECT COUNT(DISTINCT visitor) AS n FROM visits WHERE end_ts >= @since ${hostClause(host)}`)
+    .get(params).n;
 }
 
 // ---------------------------------------------------------------------------
@@ -111,12 +127,30 @@ export function series(fromMs, toMs, host = null, stepSec = null) {
                 SUM(CASE WHEN status >= 300 AND status < 400 THEN 1 ELSE 0 END) AS c3xx,
                 SUM(CASE WHEN status >= 400 AND status < 500 THEN 1 ELSE 0 END) AS c4xx,
                 SUM(CASE WHEN status >= 500 THEN 1 ELSE 0 END) AS c5xx,
-                SUM(bot) AS bots
+                SUM(bot) AS bots,
+                SUM(CASE WHEN ${PAGEVIEW_SQL} THEN 1 ELSE 0 END) AS pageviews
            FROM events
           WHERE ts >= @from AND ts < @to ${hostClause(host)}
           GROUP BY bucket ORDER BY bucket`
       )
       .all(params);
+
+    // Visits by the minute they started, from the visit state still held.
+    const visits = db
+      .prepare(
+        `SELECT CAST(start_ts / (@step * 1000) AS INTEGER) * @step AS bucket,
+                COUNT(*) AS visits, SUM(first) AS visitors
+           FROM visits
+          WHERE start_ts >= @from AND start_ts < @to ${hostClause(host)}
+          GROUP BY bucket`
+      )
+      .all(params);
+    const byBucket = new Map(visits.map((v) => [v.bucket, v]));
+    for (const r of rows) {
+      const v = byBucket.get(r.bucket);
+      r.visits = v?.visits ?? 0;
+      r.visitors = v?.visitors ?? 0;
+    }
     return { step, points: rows };
   }
 
@@ -126,7 +160,8 @@ export function series(fromMs, toMs, host = null, stepSec = null) {
               SUM(requests) AS requests, SUM(bytes_out) AS bytes_out,
               SUM(bytes_in) AS bytes_in, SUM(dur_sum) AS dur_sum,
               SUM(c2xx) AS c2xx, SUM(c3xx) AS c3xx,
-              SUM(c4xx) AS c4xx, SUM(c5xx) AS c5xx, SUM(bots) AS bots
+              SUM(c4xx) AS c4xx, SUM(c5xx) AS c5xx, SUM(bots) AS bots,
+              SUM(pageviews) AS pageviews, SUM(visits) AS visits, SUM(visitors) AS visitors
          FROM rollup
         WHERE bucket >= @from AND bucket < @to ${hostClause(host)}
         GROUP BY 1 ORDER BY 1`
@@ -174,6 +209,7 @@ export function topDim(
          FROM dims
         WHERE dim = @dim AND bucket >= @from AND bucket < @to ${hostClause(host)} ${likeClause}
         GROUP BY value
+       HAVING SUM(requests) > 0  -- an exit page a visit has since moved on from
         ORDER BY ${order}
         LIMIT @limit OFFSET @offset`
     )
@@ -415,7 +451,14 @@ function eventFilters(f, params) {
   }
   if (f.cipher) {
     if (f.cipher === '(none)') parts.push('tls_cipher IS NULL');
-    else eq('cipher = @cipher', 'cipher', String(f.cipher));
+    else eq('tls_cipher = @cipher', 'cipher', String(f.cipher));
+  }
+
+  // Visitor analytics. Channel, campaign and language are only recorded on
+  // navigations, so these narrow to page loads by themselves.
+  if (f.pageview === '1') parts.push(PAGEVIEW_SQL);
+  for (const key of ['channel', 'lang', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content']) {
+    if (f[key]) eq(`${key} = @${key}`, key, String(f[key]));
   }
   if (f.country) {
     if (f.country === 'XX') parts.push('country IS NULL');
@@ -517,7 +560,8 @@ function eventFilters(f, params) {
 export const EVENT_FILTER_KEYS = [
   'host', 'ip', 'asn', 'country', 'status', 'method', 'path', 'ua', 'browser',
   'os', 'device', 'referer', 'proto', 'tls', 'cipher', 'ext', 'lat', 'bots',
-  'q', 'uaq', 'pathq', 'minDur', 'from', 'to',
+  'pageview', 'channel', 'lang', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term',
+  'utm_content', 'q', 'uaq', 'pathq', 'minDur', 'from', 'to',
 ];
 
 // Most filters here cannot use an index — a substring match on a User-Agent,

@@ -5,6 +5,7 @@ import { useLocalState } from './lib/useApi.js';
 import { Icon, Spinner } from './components/ui.jsx';
 import Login from './pages/Login.jsx';
 import Dashboard from './pages/Dashboard.jsx';
+import Traffic from './pages/Traffic.jsx';
 import Domains from './pages/Domains.jsx';
 import DomainDetail from './pages/DomainDetail.jsx';
 import LogStream from './pages/LogStream.jsx';
@@ -20,6 +21,7 @@ import CaddyHistory from './pages/caddy/History.jsx';
 
 const TITLES = [
   [/^\/$/, 'Dashboard'],
+  [/^\/traffic/, 'Traffic'],
   [/^\/domains$/, 'Domains'],
   [/^\/domains\//, 'Domain detail'],
   [/^\/requests/, 'Request explorer'],
@@ -152,6 +154,9 @@ export default function App() {
           <NavLink to="/" end>
             <Icon name="dashboard" /> Dashboard
           </NavLink>
+          <NavLink to="/traffic">
+            <Icon name="traffic" /> Traffic
+          </NavLink>
           <NavLink to="/domains">
             <Icon name="domains" /> Domains
           </NavLink>
@@ -218,6 +223,7 @@ export default function App() {
         <div className="content">
           <Routes>
             <Route path="/" element={<Dashboard ctx={ctx} />} />
+            <Route path="/traffic" element={<Traffic ctx={ctx} />} />
             <Route path="/domains" element={<Domains ctx={ctx} />} />
             <Route path="/domains/:host" element={<DomainDetail ctx={ctx} />} />
             <Route path="/requests" element={<Requests ctx={ctx} />} />

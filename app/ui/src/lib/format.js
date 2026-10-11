@@ -33,6 +33,16 @@ export function ms(v) {
   return `${nf1.format(v / 1000)} s`;
 }
 
+/** Time on site: "45s", "3m 05s", "1h 02m". */
+export function duration(msValue) {
+  if (msValue === null || msValue === undefined) return '—';
+  const s = Math.round(msValue / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${String(s % 60).padStart(2, '0')}s`;
+  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`;
+}
+
 export const pct = (v, digits = 1) =>
   v === null || v === undefined ? '—' : `${(v * 100).toFixed(digits)}%`;
 

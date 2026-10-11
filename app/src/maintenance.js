@@ -12,6 +12,7 @@ import { getDb } from './db.js';
 import { config } from './config.js';
 import { logger } from './util/log.js';
 import { DAY } from './ingest/rollup.js';
+import { SALT_PREFIX, forgetSalts } from './ingest/visits.js';
 
 const log = logger('maintain');
 
@@ -34,10 +35,12 @@ function foldHourlyToDaily(db) {
   const fold = db.transaction(() => {
     db.prepare(
       `INSERT INTO rollup (bucket, gran, host, requests, bytes_out, bytes_in, dur_sum,
-                           dur_max, c1xx, c2xx, c3xx, c4xx, c5xx, bots)
+                           dur_max, c1xx, c2xx, c3xx, c4xx, c5xx, bots, pageviews,
+                           visits, visitors, bounces, visit_ms)
        SELECT CAST(bucket / ${DAY} AS INTEGER) * ${DAY}, 'd', host,
               SUM(requests), SUM(bytes_out), SUM(bytes_in), SUM(dur_sum),
-              MAX(dur_max), SUM(c1xx), SUM(c2xx), SUM(c3xx), SUM(c4xx), SUM(c5xx), SUM(bots)
+              MAX(dur_max), SUM(c1xx), SUM(c2xx), SUM(c3xx), SUM(c4xx), SUM(c5xx), SUM(bots),
+              SUM(pageviews), SUM(visits), SUM(visitors), SUM(bounces), SUM(visit_ms)
          FROM rollup
         WHERE gran = 'h' AND bucket < ?
         GROUP BY 1, host
@@ -52,7 +55,12 @@ function foldHourlyToDaily(db) {
          c3xx = rollup.c3xx + excluded.c3xx,
          c4xx = rollup.c4xx + excluded.c4xx,
          c5xx = rollup.c5xx + excluded.c5xx,
-         bots = rollup.bots + excluded.bots`
+         bots = rollup.bots + excluded.bots,
+         pageviews = rollup.pageviews + excluded.pageviews,
+         visits    = rollup.visits    + excluded.visits,
+         visitors  = rollup.visitors  + excluded.visitors,
+         bounces   = rollup.bounces   + excluded.bounces,
+         visit_ms  = rollup.visit_ms  + excluded.visit_ms`
     ).run(boundary);
 
     db.prepare(
@@ -85,7 +93,11 @@ function foldHourlyToDaily(db) {
 function compactDims(db) {
   const cutoff = nowSec() - config.retention.dimCompactAfterDays * DAY;
   const topN = config.retention.dimTopN;
-  const wide = ['path', 'ip', 'ua', 'referer'];
+  const wide = [
+    'path', 'ip', 'ua', 'referer',
+    'page', 'entry', 'exit', 'refsite', 'lang', 'broken',
+    'utm_source', 'utm_campaign', 'utm_term', 'utm_content',
+  ];
   let compacted = 0;
 
   for (const dim of wide) {
@@ -178,6 +190,32 @@ function prune(db) {
   // Hosts with no remaining data disappear from the domains list.
   out.hosts = db
     .prepare('DELETE FROM hosts WHERE host NOT IN (SELECT DISTINCT host FROM rollup)')
+    .run().changes;
+
+  // Visit state. A visit can no longer grow after 30 quiet minutes, but its
+  // row also answers "has this visitor been here today?", so it stays a day.
+  out.visits = db
+    .prepare('DELETE FROM visits WHERE touched < ?')
+    .run(Date.now() - 26 * 3_600_000).changes;
+
+  // Visitor salts, once no stored request from that day can still need one.
+  // Afterwards that day's visitor ids cannot be recomputed from an address.
+  const keepDays = Math.ceil(config.retention.rawHours / 24) + 2;
+  const oldestDay = Math.floor(Date.now() / 86_400_000) - keepDays;
+  out.salts = 0;
+  for (const { key } of db.prepare('SELECT key FROM meta WHERE key LIKE ?').all(`${SALT_PREFIX}%`)) {
+    if (Number(key.slice(SALT_PREFIX.length)) < oldestDay) {
+      out.salts += db.prepare('DELETE FROM meta WHERE key = ?').run(key).changes;
+    }
+  }
+  if (out.salts) forgetSalts();
+
+  // Exit pages are moved as visits grow, which can leave rows counting nothing.
+  out.emptyDims = db
+    .prepare(
+      `DELETE FROM dims WHERE gran IN ('h', 'd') AND dim = 'exit'
+          AND requests = 0 AND bytes = 0 AND errors = 0 AND dur_sum = 0`
+    )
     .run().changes;
 
   out.sessions = db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now()).changes;

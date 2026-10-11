@@ -91,6 +91,12 @@ export const config = {
     inlineTimeoutMs: int(env.ENRICH_INLINE_TIMEOUT_MS, 2000),
   },
 
+  bots: {
+    // Count a "Chrome" that sends none of Chrome's Sec-Fetch / client-hint
+    // headers as a bot. Switch off if a log filter removes those headers.
+    headerCheck: bool(env.BOT_HEADER_CHECK, true),
+  },
+
   ingest: {
     batchSize: int(env.INGEST_BATCH_SIZE, 2000),
     flushMs: int(env.INGEST_FLUSH_MS, 1000),

@@ -193,6 +193,7 @@ export function StatusStrip({ totals }) {
 export function Icon({ name }) {
   const paths = {
     dashboard: 'M3 3h7v7H3V3zm11 0h7v4h-7V3zM3 14h7v7H3v-7zm11-3h7v10h-7V11z',
+    traffic: 'M3 20h18M6 16v-4M11 16V8M16 16v-6M21 16V5',
     domains: 'M12 2a10 10 0 100 20 10 10 0 000-20zm0 0c3 3 3 17 0 20M2.5 9h19M2.5 15h19',
     requests: 'M10 4h11M10 12h11M10 20h11M4 4h.01M4 12h.01M4 20h.01',
     stream: 'M4 6h16M4 12h10M4 18h13',
