@@ -4,6 +4,7 @@ import { getDb } from '../db.js';
 import { config } from '../config.js';
 import { logger } from '../util/log.js';
 import { cidrMatcher } from '../util/net.js';
+import { packRaw } from '../util/rawlog.js';
 import { Tailer, logDirExists } from './tailer.js';
 import { parseLine } from './parser.js';
 import { startRollupLoop, stopRollupLoop } from './rollup.js';
@@ -21,15 +22,16 @@ function prep() {
     insert: db.prepare(
       `INSERT INTO events (ts, host, method, path, query, status, bytes_out, bytes_in,
                            dur_ms, ip, ua, referer, proto, tls_version, tls_cipher,
-                           browser, os, device, bot, country, asn, as_org, referer_host, rolled, raw,
+                           browser, os, device, bot, country, asn, as_org, referer_host, rolled,
                            nav, channel, lang, utm_source, utm_medium, utm_campaign, utm_term,
                            utm_content)
        VALUES (@ts, @host, @method, @path, @query, @status, @bytes_out, @bytes_in,
                @dur_ms, @ip, @ua, @referer, @proto, @tls_version, @tls_cipher,
-               @browser, @os, @device, @bot, @country, @asn, @as_org, @referer_host, 0, @raw,
+               @browser, @os, @device, @bot, @country, @asn, @as_org, @referer_host, 0,
                @nav, @channel, @lang, @utm_source, @utm_medium, @utm_campaign, @utm_term,
                @utm_content)`
     ),
+    insertRaw: db.prepare('INSERT INTO events_raw (id, raw) VALUES (?, ?)'),
     stats: db.prepare(
       `INSERT INTO ingest_stats (day, lines, parsed, skipped, malformed)
          VALUES (@day, @lines, @parsed, @skipped, @malformed)
@@ -101,7 +103,10 @@ export class Ingestor {
       const db = getDb();
       const s = prep();
       const write = db.transaction((rows) => {
-        for (const ev of rows) s.insert.run(ev);
+        for (const { raw, ...ev } of rows) {
+          const id = s.insert.run(ev).lastInsertRowid;
+          s.insertRaw.run(id, packRaw(raw));
+        }
         const day = Math.floor(Date.now() / 86_400_000) * 86400;
         s.stats.run({ day, ...this.counters });
       });

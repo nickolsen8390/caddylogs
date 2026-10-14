@@ -32,6 +32,8 @@ export default function IpDetail({ ctx }) {
 
   const info = data.info ?? {};
   const live = data.live ?? {};
+  // Which of the stored requests the counts and breakdowns cover (see ipDetail).
+  const sample = data.sample ?? { rows: live.requests ?? 0, partial: false };
   const ctxLinks = { host, range };
   const lookups = ctx?.features?.notoolkit !== false;
 
@@ -121,7 +123,11 @@ export default function IpDetail({ ctx }) {
           label="Errors"
           value={compact(live.errors ?? 0)}
           tone={live.errors ? 'amber' : undefined}
-          sub={live.requests ? pct(live.errors / live.requests) : '—'}
+          sub={
+            sample.rows
+              ? `${pct(live.errors / sample.rows)}${sample.partial ? ` of the latest ${compact(sample.rows)}` : ''}`
+              : '—'
+          }
         />
         <Stat label="Domains touched" value={num(live.hosts ?? 0)} sub={`${num(live.paths ?? 0)} distinct URLs`} />
         <Stat
@@ -136,6 +142,12 @@ export default function IpDetail({ ctx }) {
       </div>
 
       {/* ------------------------------------------------ behaviour ------ */}
+      {sample.partial && (
+        <p className="faint" style={{ fontSize: 11.5, margin: '0 0 10px' }}>
+          This address has {num(live.requests)} stored requests. The errors, bots, domains, URLs and
+          agents here are counted over its latest {num(sample.rows)}, to keep this page fast.
+        </p>
+      )}
       <div className="grid cols-3" style={{ marginBottom: 14 }}>
         <Panel title="Domains requested" flush>
           <TopList

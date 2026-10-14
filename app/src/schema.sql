@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS ingest_state (
 CREATE INDEX IF NOT EXISTS idx_ingest_state_updated ON ingest_state(updated_at);
 
 -- Individual requests. Short retention; powers the live stream and per-request
--- inspection. `raw` holds the original Caddy JSON line verbatim.
+-- inspection. The original Caddy JSON line is in events_raw; `raw` here is
+-- only filled on rows written before 1.2.3, and empties as they age out.
 CREATE TABLE IF NOT EXISTS events (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   ts          INTEGER NOT NULL,
@@ -71,6 +72,14 @@ CREATE INDEX IF NOT EXISTS idx_events_host_ts   ON events(host, ts);
 CREATE INDEX IF NOT EXISTS idx_events_unrolled  ON events(rolled, ts) WHERE rolled = 0;
 CREATE INDEX IF NOT EXISTS idx_events_ip        ON events(ip);
 CREATE INDEX IF NOT EXISTS idx_events_status    ON events(status);
+
+-- The original log line of each stored request, compressed (util/rawlog.js).
+-- Kept apart from `events` so that searching requests does not read it: in
+-- the same table it made each row ten times larger.
+CREATE TABLE IF NOT EXISTS events_raw (
+  id   INTEGER PRIMARY KEY,   -- events.id
+  raw  BLOB NOT NULL
+);
 
 -- Per-bucket, per-host headline counters.
 CREATE TABLE IF NOT EXISTS rollup (

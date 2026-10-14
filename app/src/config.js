@@ -100,6 +100,10 @@ export const config = {
     rawMaxRows: int(env.RAW_MAX_ROWS, 5_000_000),
     dimTopN: int(env.DIM_TOP_N, 250),
     dimCompactAfterDays: int(env.DIM_COMPACT_AFTER_DAYS, 7),
+    // A dimension with more values than this in one hour (an API whose every
+    // lookup is a new URL) is trimmed this many hours after, not after days.
+    dimHourlyMax: Math.max(1, int(env.DIM_HOURLY_MAX, 2000)),
+    dimCompactAfterHours: Math.max(1, int(env.DIM_COMPACT_AFTER_HOURS, 1)),
   },
 
   notoolkit: {

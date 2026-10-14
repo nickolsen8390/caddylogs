@@ -12,6 +12,7 @@ import { logger } from '../util/log.js';
 import { extensionOf, refererHost, latencyBucket, parseLine, VISIT_COLUMNS } from './parser.js';
 import { isPageview, isExternalReferer, UTM_KEYS } from './traffic.js';
 import { Sessionizer, VISIT_GAP_MS } from './visits.js';
+import { readRaw } from '../util/rawlog.js';
 
 const log = logger('rollup');
 
@@ -38,7 +39,6 @@ function prep() {
     markRolledOne: db.prepare('UPDATE events SET rolled = 1 WHERE id = ?'),
     ipInfo: db.prepare('SELECT ip, country, asn, as_org FROM ip_info WHERE ip = ?'),
     fixEvent: db.prepare('UPDATE events SET country = ?, asn = ?, as_org = ? WHERE id = ?'),
-    raw: db.prepare('SELECT raw FROM events WHERE id = ?'),
     setVisit: db.prepare(
       `UPDATE events SET ${VISIT_COLUMNS.map((c) => `${c} = @${c}`).join(', ')} WHERE id = @id`
     ),
@@ -346,7 +346,7 @@ export function rollupPending(limit = 20000) {
   const visited = [];
   for (const ev of rows) {
     if (ev.nav !== null) continue;
-    Object.assign(ev, visitFromRaw(s.raw.get(ev.id)?.raw));
+    Object.assign(ev, visitFromRaw(readRaw(getDb(), ev.id)));
     visited.push(ev);
   }
 
@@ -414,7 +414,7 @@ export function backfillVisits(limit = 5000) {
   const rows = s.unvisited.all(state.next, state.last, limit);
   const acc = new Accumulator();
   for (const r of rows) {
-    Object.assign(r, visitFromRaw(r.raw));
+    Object.assign(r, visitFromRaw(r.raw ?? readRaw(getDb(), r.id)));
     if (r.rolled) acc.visit(hourBucket(r.ts), r.host, r);
   }
   const next = rows.length ? rows[rows.length - 1].id + 1 : state.last + 1;

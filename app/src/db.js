@@ -163,6 +163,21 @@ function migrate(db) {
   `);
 }
 
+/**
+ * Open the database read-only, without migrations or any write, and make
+ * getDb() return that connection. For diagnostic tools run beside the live
+ * app. Uses the app's cache settings so timings match what the app sees.
+ */
+export function openReadOnly() {
+  if (db) return db;
+  db = new Database(config.dbPath, { readonly: true, fileMustExist: true });
+  db.pragma('busy_timeout = 10000');
+  db.pragma('temp_store = MEMORY');
+  db.pragma('cache_size = -65536');
+  db.pragma('mmap_size = 268435456');
+  return db;
+}
+
 /** Wrap a function in an IMMEDIATE transaction (write lock taken up front). */
 export function tx(fn) {
   return getDb().transaction(fn);

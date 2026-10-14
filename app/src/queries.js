@@ -5,6 +5,12 @@
 // rows it consumed. Queries can therefore scan both and normalise the bucket
 // to whatever step the caller wants, with no risk of double counting.
 //
+// Every query on `dims` says `gran IN ('h', 'd')` although that matches every
+// row: both of its indexes lead with gran, and without a condition on it
+// SQLite cannot use them. It then walks every dimension's rows in the time
+// range to answer for one — on a busy site, a million URL rows to list five
+// status codes.
+//
 // Note on parameters: better-sqlite3 rejects a bound object containing a name
 // the statement does not use, so optional filters must add both the SQL
 // fragment and its parameter together. `scope()` below is the only place that
@@ -14,6 +20,7 @@ import { getDb } from './db.js';
 import { config } from './config.js';
 import { isPrivateIp } from './util/net.js';
 import { PAGEVIEW_SQL } from './ingest/traffic.js';
+import { readRaw } from './util/rawlog.js';
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
@@ -80,7 +87,7 @@ export function totals(fromMs, toMs, host = null) {
   const uniq = db
     .prepare(
       `SELECT COUNT(DISTINCT value) AS n FROM dims
-        WHERE dim = 'ip' AND bucket >= @from AND bucket < @to ${hostClause(host)}`
+        WHERE gran IN ('h', 'd') AND dim = 'ip' AND bucket >= @from AND bucket < @to ${hostClause(host)}`
     )
     .get(params);
 
@@ -220,7 +227,7 @@ export function topDim(
               SUM(errors)   AS errors,
               CASE WHEN SUM(requests) > 0 THEN SUM(dur_sum) / SUM(requests) ELSE 0 END AS avg_ms
          FROM dims
-        WHERE dim = @dim AND bucket >= @from AND bucket < @to ${hostClause(host)} ${likeClause}
+        WHERE gran IN ('h', 'd') AND dim = @dim AND bucket >= @from AND bucket < @to ${hostClause(host)} ${likeClause}
         GROUP BY value
         ORDER BY ${order}
         LIMIT @limit OFFSET @offset`
@@ -233,7 +240,7 @@ export function topDim(
     .prepare(
       `SELECT COUNT(DISTINCT value) AS n, COALESCE(SUM(requests),0) AS requests
          FROM dims
-        WHERE dim = @dim AND bucket >= @from AND bucket < @to ${hostClause(host)}`
+        WHERE gran IN ('h', 'd') AND dim = @dim AND bucket >= @from AND bucket < @to ${hostClause(host)}`
     )
     .get(scope(fromMs, toMs, host, { dim }));
 
@@ -256,7 +263,7 @@ export function topAsns(fromMs, toMs, { host = null, limit = 20 } = {}) {
               SUM(d.requests) AS requests, SUM(d.bytes) AS bytes, SUM(d.errors) AS errors
          FROM dims d
     LEFT JOIN asn_names n ON n.asn = CAST(d.value AS INTEGER)
-        WHERE d.dim = 'asn' AND d.bucket >= @from AND d.bucket < @to
+        WHERE d.gran IN ('h', 'd') AND d.dim = 'asn' AND d.bucket >= @from AND d.bucket < @to
               ${host ? 'AND d.host = @host' : ''}
         GROUP BY d.value
         ORDER BY requests DESC
@@ -274,7 +281,7 @@ export function asnDetail(asn, fromMs, toMs, host = null) {
       `SELECT COALESCE(SUM(requests),0) AS requests, COALESCE(SUM(bytes),0) AS bytes,
               COALESCE(SUM(errors),0) AS errors
          FROM dims
-        WHERE dim = 'asn' AND value = @asn AND bucket >= @from AND bucket < @to
+        WHERE gran IN ('h', 'd') AND dim = 'asn' AND value = @asn AND bucket >= @from AND bucket < @to
               ${hostClause(host)}`
     )
     .get(scope(fromMs, toMs, host, { asn: String(asn) }));
@@ -295,7 +302,7 @@ export function errorPaths(fromMs, toMs, host = null, limit = 25) {
               CASE WHEN SUM(requests) > 0
                    THEN CAST(SUM(errors) AS REAL) / SUM(requests) ELSE 0 END AS error_rate
          FROM dims
-        WHERE dim = 'path' AND bucket >= @from AND bucket < @to ${hostClause(host)}
+        WHERE gran IN ('h', 'd') AND dim = 'path' AND bucket >= @from AND bucket < @to ${hostClause(host)}
         GROUP BY value
        HAVING errors > 0
         ORDER BY errors DESC
@@ -310,7 +317,7 @@ export function countries(fromMs, toMs, host = null) {
     .prepare(
       `SELECT value AS country, SUM(requests) AS requests, SUM(bytes) AS bytes
          FROM dims
-        WHERE dim = 'country' AND bucket >= @from AND bucket < @to ${hostClause(host)}
+        WHERE gran IN ('h', 'd') AND dim = 'country' AND bucket >= @from AND bucket < @to ${hostClause(host)}
         GROUP BY value ORDER BY requests DESC`
     )
     .all(scope(fromMs, toMs, host));
@@ -329,7 +336,7 @@ export function latency(fromMs, toMs, host = null) {
     .prepare(
       `SELECT value, SUM(requests) AS requests
          FROM dims
-        WHERE dim = 'lat' AND bucket >= @from AND bucket < @to ${hostClause(host)}
+        WHERE gran IN ('h', 'd') AND dim = 'lat' AND bucket >= @from AND bucket < @to ${hostClause(host)}
         GROUP BY value`
     )
     .all(scope(fromMs, toMs, host));
@@ -584,8 +591,10 @@ export const EVENT_FILTER_KEYS = [
 // At a few hundred thousand requests an hour that is millions of rows and
 // seconds during which every other API call, and the live stream, stalled.
 // Instead, searches walk the table newest-first in bounded id windows and stop
-// at a time budget; paging resumes exactly where the walk stopped.
-const SCAN_WINDOW = 100_000;
+// at a time budget; paging resumes exactly where the walk stopped. The budget
+// is only checked between windows, so a window must be small enough to fit
+// in it comfortably even when none of its rows are cached.
+const SCAN_WINDOW = 20_000;
 const SCAN_BUDGET_MS = 500;
 
 /** Filters selective enough that the planner goes straight to the rows. */
@@ -646,8 +655,12 @@ export function searchEvents(filters = {}, { limit = 100, before = null } = {}) 
     };
   }
 
+  // NOT INDEXED keeps this to the id window. Given `host = ?`, SQLite would
+  // otherwise prefer the host index, and for a busy domain read every one of
+  // its stored requests to sort out the newest — seconds, on every page. The
+  // id range itself still uses the primary key.
   const stmt = db.prepare(
-    `SELECT ${EVENT_COLUMNS} FROM events
+    `SELECT ${EVENT_COLUMNS} FROM events NOT INDEXED
       WHERE id < @top AND id >= @floor ${where}
       ORDER BY id DESC LIMIT @need`
   );
@@ -740,7 +753,9 @@ export function eventById(id) {
   const n = Number(id);
   if (!Number.isInteger(n) || n <= 0) return { found: false, reason: 'bad_id' };
 
-  const event = getDb().prepare('SELECT * FROM events WHERE id = ?').get(n);
+  const db = getDb();
+  const event = db.prepare('SELECT * FROM events WHERE id = ?').get(n);
+  if (event) event.raw = readRaw(db, n);
   if (!event) {
     return {
       found: false,
@@ -763,6 +778,9 @@ export function eventById(id) {
   return { found: true, event, parsed, parseError, hasRaw: Boolean(event.raw) };
 }
 
+/** Latest requests from one address the address page summarises (see ipDetail). */
+const IP_SAMPLE = 20_000;
+
 /** Everything known about one source address. */
 export function ipDetail(ip, fromMs, toMs, host = null) {
   const db = getDb();
@@ -780,45 +798,72 @@ export function ipDetail(ip, fromMs, toMs, host = null) {
       `SELECT COALESCE(SUM(requests),0) AS requests, COALESCE(SUM(bytes),0) AS bytes,
               COALESCE(SUM(errors),0) AS errors
          FROM dims
-        WHERE dim = 'ip' AND value = @ip AND bucket >= @from AND bucket < @to ${hostClause(host)}`
+        WHERE gran IN ('h', 'd') AND dim = 'ip' AND value = @ip AND bucket >= @from AND bucket < @to ${hostClause(host)}`
     )
     .get(scope(fromMs, toMs, host, { ip }));
 
   // Everything below comes from retained events, so it covers the raw window
   // rather than the full statistics range.
-  const live = db
-    .prepare(
-      `SELECT COUNT(*) AS requests, COALESCE(SUM(bytes_out),0) AS bytes,
-              MIN(ts) AS first_seen, MAX(ts) AS last_seen,
-              COUNT(DISTINCT host) AS hosts, COUNT(DISTINCT path) AS paths,
-              COUNT(DISTINCT ua) AS agents,
-              SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END) AS errors,
-              SUM(CASE WHEN bot = 1 THEN 1 ELSE 0 END) AS bots
-         FROM events WHERE ip = ?`
-    )
-    .get(ip);
+  //
+  // One address can be most of a server's traffic — a monitor, an API client —
+  // and this used to read every one of its stored requests six times over:
+  // nearly five minutes for the busiest address on a 3M-a-day server. Now the count and
+  // first/last seen come from the ip index alone, and the rest from a single
+  // pass over the address's latest IP_SAMPLE requests; `sample` says when that
+  // was not all of them.
+  const requests = db.prepare('SELECT COUNT(*) AS n FROM events WHERE ip = ?').get(ip).n;
+  const edge = (dir) =>
+    db.prepare(`SELECT ts FROM events WHERE ip = ? ORDER BY id ${dir} LIMIT 1`).get(ip)?.ts ?? null;
 
-  const breakdown = (column) =>
-    db
-      .prepare(
-        `SELECT ${column} AS value, COUNT(*) AS requests,
-                COALESCE(SUM(bytes_out),0) AS bytes,
-                SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END) AS errors
-           FROM events WHERE ip = ? AND ${column} IS NOT NULL
-          GROUP BY ${column} ORDER BY requests DESC LIMIT 25`
-      )
-      .all(ip);
+  const by = { host: new Map(), path: new Map(), ua: new Map(), status: new Map(), method: new Map() };
+  const sample = { rows: 0, bytes: 0, errors: 0, bots: 0 };
+  const rows = db
+    .prepare(
+      `SELECT host, path, ua, status, method, bytes_out, bot
+         FROM events WHERE ip = ? ORDER BY id DESC LIMIT ?`
+    )
+    .iterate(ip, IP_SAMPLE);
+  for (const r of rows) {
+    const error = r.status >= 400 ? 1 : 0;
+    sample.rows += 1;
+    sample.bytes += r.bytes_out || 0;
+    sample.errors += error;
+    sample.bots += r.bot ? 1 : 0;
+    for (const [column, counts] of Object.entries(by)) {
+      const value = r[column];
+      if (value === null || value === undefined) continue;
+      const c = counts.get(value) ?? counts.set(value, { value, requests: 0, bytes: 0, errors: 0 }).get(value);
+      c.requests += 1;
+      c.bytes += r.bytes_out || 0;
+      c.errors += error;
+    }
+  }
+  const top = (counts) => [...counts.values()].sort((a, b) => b.requests - a.requests).slice(0, 25);
 
   return {
     ip,
     info,
     totals,
-    live,
-    hosts: breakdown('host'),
-    paths: breakdown('path'),
-    agents: breakdown('ua'),
-    statuses: breakdown('status'),
-    methods: breakdown('method'),
+    live: {
+      requests,
+      first_seen: edge('ASC'),
+      last_seen: edge('DESC'),
+      // From the sample below:
+      bytes: sample.bytes,
+      errors: sample.errors,
+      bots: sample.bots,
+      hosts: by.host.size,
+      paths: by.path.size,
+      agents: by.ua.size,
+    },
+    // How many of `live.requests` the breakdowns and the counts above cover:
+    // the newest `rows`, all of them unless the address has more than `limit`.
+    sample: { rows: sample.rows, limit: IP_SAMPLE, partial: sample.rows < requests },
+    hosts: top(by.host),
+    paths: top(by.path),
+    agents: top(by.ua),
+    statuses: top(by.status),
+    methods: top(by.method),
     retainedFrom: oldestRetainedEvent(),
     retentionHours: config.retention.rawHours,
   };

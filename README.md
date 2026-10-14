@@ -266,7 +266,8 @@ Everything lives in one SQLite file on the `data` volume, in three tiers:
 
 | Tier | Contents | Governed by |
 |---|---|---|
-| `events` | individual requests incl. the raw JSON line | `RAW_RETENTION_HOURS` (48h), capped by `RAW_MAX_ROWS` |
+| `events` | individual requests | `RAW_RETENTION_HOURS` (48h), capped by `RAW_MAX_ROWS` |
+| `events_raw` | each request's original JSON line, compressed | the same as `events` |
 | `visits` | visits that may still grow (working state for the Traffic page) | a day after a visit's last page view |
 | `visitor_seen` | which visitor ids had a page view in each hour, for exact visitor counts | `HOURLY_RETENTION_DAYS` (45d) |
 | `rollup` / `dims` at hourly granularity | every counter and dimension | `HOURLY_RETENTION_DAYS` (45d) |
@@ -281,10 +282,43 @@ the hourly rows are then deleted, so a period exists at exactly one granularity
 and totals can never double-count. High-cardinality dimensions (URLs, IPs, user
 agents, referrers) are trimmed to the top `DIM_TOP_N` values per bucket after
 `DIM_COMPACT_AFTER_DAYS`, with the remainder folded into a single `(other)` row
-so totals stay exact while storage stays bounded.
+so totals stay exact while storage stays bounded. The most-errored values are
+kept as well, so error lists stay complete.
 
-Maintenance runs hourly inside the `ingest` container. Nothing external to
-schedule.
+A dimension that explodes — more than `DIM_HOURLY_MAX` (2000) values in one
+hour, typically an API where every lookup is a URL never seen before — is
+trimmed as soon as that hour is over (`DIM_COMPACT_AFTER_HOURS`) rather than
+after a week; otherwise every list on every page would read through millions
+of rows. Ordinary sites never reach that, and keep every value for the week.
+The trimmed URLs are still in the stored requests for `RAW_RETENTION_HOURS`.
+
+Maintenance runs hourly inside the `ingest` container, with the early trim
+every 10 minutes. Nothing external to schedule.
+
+### Shrinking the database file
+
+SQLite reuses the space of deleted rows but does not return it to the disk.
+Upgrading to 1.2.3 frees most of a busy server's database — requests stop
+carrying their uncompressed log line — but only as the old requests age out,
+and the file keeps its size. Once `RAW_RETENTION_HOURS` has passed, it can be
+rewritten without the unused space:
+
+```bash
+docker compose stop app
+```
+```bash
+docker compose run --rm --no-deps app node src/tools/vacuum.js --yes
+```
+```bash
+docker compose start app
+```
+
+It needs free disk space of about the size the file shrinks to, and takes a
+few minutes for a multi-gigabyte file. Skipping it costs only disk space.
+
+To see where the time goes on a slow installation, run
+`docker compose exec app node src/tools/perf.js`: it reports what the file
+holds and times every query behind the main pages, without changing anything.
 
 ### How the Traffic page counts page views
 
@@ -540,6 +574,7 @@ likely to change:
 | `RETENTION_DAYS` | `365` | how long statistics are kept |
 | `HOURLY_RETENTION_DAYS` | `45` | how long hour-level detail is kept |
 | `RAW_RETENTION_HOURS` | `48` | how long individual requests are kept |
+| `DIM_HOURLY_MAX` | `2000` | values one dimension may gather in an hour before it is trimmed right away (see §5) |
 | `IGNORE_HOSTS` / `IGNORE_CIDRS` | — | traffic never recorded (healthchecks, monitoring) |
 | `BOT_HEADER_CHECK` | `true` | count a "Chrome" that sends no Sec-Fetch / client-hint headers as a bot |
 | `STREAM_POLL_MS` | `400` | live-tail latency |

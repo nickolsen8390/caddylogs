@@ -104,76 +104,105 @@ function foldHourlyToDaily(db) {
   return pending;
 }
 
+/** Dimensions whose values are unbounded, and so are trimmed. */
+const WIDE_DIMS = [
+  'path', 'ip', 'ua', 'referer',
+  'page', 'entry', 'exit', 'refsite', 'lang', 'broken',
+  'utm_source', 'utm_campaign', 'utm_term', 'utm_content',
+];
+
+// The values one bucket keeps: its top N by requests, plus its top N by
+// errors, so the error lists keep their worst offenders even when those are
+// rarely requested. `@bucket @gran @host @dim @topN`.
+const IN_BUCKET = 'bucket = @bucket AND gran = @gran AND host = @host AND dim = @dim';
+const KEPT = `
+  SELECT value FROM (SELECT value FROM dims WHERE ${IN_BUCKET} AND value <> '(other)'
+                      ORDER BY requests DESC LIMIT @topN)
+  UNION
+  SELECT value FROM (SELECT value FROM dims WHERE ${IN_BUCKET} AND value <> '(other)' AND errors > 0
+                      ORDER BY errors DESC LIMIT @topN)`;
+
 /**
- * Trim high-cardinality dimensions on older buckets to the top N values,
- * folding everything else into a single "(other)" row so totals stay exact.
+ * Trim wide dimensions to the values worth keeping (see KEPT), folding the
+ * rest of each bucket into a single "(other)" row so totals stay exact.
+ *
+ * Two passes. Buckets older than DIM_COMPACT_AFTER_DAYS are trimmed once
+ * they hold more than DIM_TOP_N values. Before that, only a bucket that has
+ * exploded — more than DIM_HOURLY_MAX values, as an API answering
+ * /lookup/<anything> produces, every lookup a new URL — is trimmed, as soon
+ * as its hour is over (DIM_COMPACT_AFTER_HOURS). Ordinary sites keep every
+ * value for the week, so distinct counts stay exact; one exploding site no
+ * longer makes every list read a million rows.
+ *
+ * Hours with visits still open are left alone (settledBefore), and the work
+ * stops after `budgetMs`, to resume on the next run.
  */
-function compactDims(db) {
-  const cutoff = Math.min(nowSec() - config.retention.dimCompactAfterDays * DAY, settledBefore());
+function compactDims(db, { early = true, late = true, budgetMs = 20_000 } = {}) {
+  const started = Date.now();
   const topN = config.retention.dimTopN;
-  const wide = [
-    'path', 'ip', 'ua', 'referer',
-    'page', 'entry', 'exit', 'refsite', 'lang', 'broken',
-    'utm_source', 'utm_campaign', 'utm_term', 'utm_content',
-  ];
+  // The early pass first: it is the one the pages are waiting on.
+  const passes = [];
+  if (early) {
+    const thisHour = Math.floor(nowSec() / 3600) * 3600;
+    passes.push({
+      cutoff: Math.min(thisHour - (config.retention.dimCompactAfterHours - 1) * 3600, settledBefore()),
+      over: Math.max(topN, config.retention.dimHourlyMax),
+    });
+  }
+  if (late) {
+    passes.push({
+      cutoff: Math.min(nowSec() - config.retention.dimCompactAfterDays * DAY, settledBefore()),
+      over: topN,
+    });
+  }
+
+  const groupsOf = db.prepare(
+    `SELECT bucket, gran, host, COUNT(*) AS n
+       FROM dims
+      WHERE gran IN ('h', 'd') AND dim = ? AND bucket < ? AND value <> '(other)'
+      GROUP BY bucket, gran, host
+     HAVING n > ?
+      LIMIT 500`
+  );
+  const surplusOf = db.prepare(
+    `SELECT COALESCE(SUM(requests),0) AS requests, COALESCE(SUM(bytes),0) AS bytes,
+            COALESCE(SUM(errors),0) AS errors, COALESCE(SUM(dur_sum),0) AS dur_sum
+       FROM dims
+      WHERE ${IN_BUCKET} AND value <> '(other)' AND value NOT IN (${KEPT})`
+  );
+  const drop = db.prepare(
+    `DELETE FROM dims WHERE ${IN_BUCKET} AND value <> '(other)' AND value NOT IN (${KEPT})`
+  );
+  const addOther = db.prepare(
+    `INSERT INTO dims (bucket, gran, host, dim, value, requests, bytes, errors, dur_sum)
+       VALUES (@bucket, @gran, @host, @dim, '(other)', @requests, @bytes, @errors, @dur_sum)
+     ON CONFLICT(bucket, gran, host, dim, value) DO UPDATE SET
+       requests = dims.requests + excluded.requests,
+       bytes    = dims.bytes    + excluded.bytes,
+       errors   = dims.errors   + excluded.errors,
+       dur_sum  = dims.dur_sum  + excluded.dur_sum`
+  );
+
   let compacted = 0;
-
-  for (const dim of wide) {
-    const groups = db
-      .prepare(
-        `SELECT bucket, gran, host, COUNT(*) AS n
-           FROM dims
-          WHERE dim = ? AND bucket < ? AND value <> '(other)'
-          GROUP BY bucket, gran, host
-         HAVING n > ?
-          LIMIT 500`
-      )
-      .all(dim, cutoff, topN);
-
-    for (const { bucket, gran, host } of groups) {
-      // Only the three key columns may be bound: better-sqlite3 rejects an
-      // object carrying a name the statement does not use (the COUNT alias).
-      const g = { bucket, gran, host };
-      const run = db.transaction(() => {
-        const surplus = db
-          .prepare(
-            `SELECT COALESCE(SUM(requests),0) AS requests, COALESCE(SUM(bytes),0) AS bytes,
-                    COALESCE(SUM(errors),0) AS errors, COALESCE(SUM(dur_sum),0) AS dur_sum
-               FROM (SELECT requests, bytes, errors, dur_sum FROM dims
-                      WHERE bucket = @bucket AND gran = @gran AND host = @host
-                        AND dim = @dim AND value <> '(other)'
-                      ORDER BY requests DESC
-                      LIMIT -1 OFFSET @topN)`
-          )
-          .get({ ...g, dim, topN });
-
-        db.prepare(
-          `DELETE FROM dims
-            WHERE bucket = @bucket AND gran = @gran AND host = @host AND dim = @dim
-              AND value IN (SELECT value FROM dims
-                             WHERE bucket = @bucket AND gran = @gran AND host = @host
-                               AND dim = @dim AND value <> '(other)'
-                             ORDER BY requests DESC
-                             LIMIT -1 OFFSET @topN)`
-        ).run({ ...g, dim, topN });
-
-        if (surplus.requests > 0) {
-          db.prepare(
-            `INSERT INTO dims (bucket, gran, host, dim, value, requests, bytes, errors, dur_sum)
-               VALUES (@bucket, @gran, @host, @dim, '(other)', @requests, @bytes, @errors, @dur_sum)
-             ON CONFLICT(bucket, gran, host, dim, value) DO UPDATE SET
-               requests = dims.requests + excluded.requests,
-               bytes    = dims.bytes    + excluded.bytes,
-               errors   = dims.errors   + excluded.errors,
-               dur_sum  = dims.dur_sum  + excluded.dur_sum`
-          ).run({ ...g, dim, ...surplus });
-        }
-      });
-      run();
-      compacted += 1;
+  let removed = 0;
+  outer: for (const { cutoff, over } of passes) {
+    for (const dim of WIDE_DIMS) {
+      for (const { bucket, gran, host } of groupsOf.all(dim, cutoff, over)) {
+        if (Date.now() - started > budgetMs) break outer;
+        // Only named parameters a statement uses may be bound (better-sqlite3).
+        const g = { bucket, gran, host, dim, topN };
+        db.transaction(() => {
+          const surplus = surplusOf.get(g);
+          removed += drop.run(g).changes;
+          if (surplus.requests || surplus.bytes || surplus.errors || surplus.dur_sum) {
+            addOther.run({ bucket, gran, host, dim, ...surplus });
+          }
+        })();
+        compacted += 1;
+      }
     }
   }
-  if (compacted) log.info('compacted dimension buckets', { groups: compacted });
+  if (compacted) log.info('compacted dimension buckets', { groups: compacted, rows: removed });
   return compacted;
 }
 
@@ -200,6 +229,12 @@ function prune(db) {
       )
       .run(excess).changes;
   }
+
+  // Their original log lines. Both deletions above take the oldest rows, and
+  // ids only grow, so everything below the oldest remaining id is unneeded.
+  out.eventsRaw = db
+    .prepare('DELETE FROM events_raw WHERE id < (SELECT COALESCE(MIN(id), 9e18) FROM events)')
+    .run().changes;
 
   const dailyCutoff = nowSec() - config.retention.days * DAY;
   out.rollup = db.prepare('DELETE FROM rollup WHERE bucket < ?').run(dailyCutoff).changes;
@@ -256,14 +291,28 @@ export function runMaintenance() {
   }
 }
 
+/** Between full runs, keep exploding dimensions trimmed (see compactDims). */
+function runEarlyCompaction() {
+  try {
+    compactDims(getDb(), { late: false });
+  } catch (err) {
+    log.error('compaction failed', { err: String(err) });
+  }
+}
+
+let earlyTimer = null;
+
 export function startMaintenance() {
   if (timer) return;
   // Stagger the first run so it does not collide with ingest warm-up.
   setTimeout(runMaintenance, 60_000);
   timer = setInterval(runMaintenance, 3600_000);
+  earlyTimer = setInterval(runEarlyCompaction, 10 * 60_000);
 }
 
 export function stopMaintenance() {
   clearInterval(timer);
+  clearInterval(earlyTimer);
   timer = null;
+  earlyTimer = null;
 }

@@ -4,6 +4,45 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org): a new major version (2.0.0) is the
 only kind that can require you to change anything when upgrading.
 
+## [1.2.3] — 2026-10-14
+
+### Fixed
+
+- Busy servers: the dashboard, Traffic, domain and request pages could take
+  5–10 seconds to load. Measured on a server logging 3 million requests a
+  day:
+  - Every list on a page read through every breakdown's rows for the period,
+    not just its own — a million URL rows to list five status codes. Each
+    list now reads only its own rows.
+  - A site whose every request is a new URL (an API answering
+    `/lookup/<anything>`) added a million URL rows a day, kept for a week. A
+    breakdown with more than 2,000 values in an hour is now trimmed to its
+    top values as soon as that hour is over, instead of after a week. The
+    most-errored values are kept too, so error lists stay complete. Change
+    the limit with `DIM_HOURLY_MAX` and the delay with
+    `DIM_COMPACT_AFTER_HOURS`. Ordinary sites never reach the limit.
+  - Searching requests read each request's full log line along with it. The
+    log line is now stored compressed, in a table of its own, so a search
+    reads a fraction of the data and stops on time when nothing matches.
+  - Searching requests by domain went through all of that domain's stored
+    requests to find the newest, which took seconds for a busy one. It now
+    reads only the newest, as other searches do.
+- An address's page could take minutes for a very busy address: it read
+  every one of its stored requests six times. Its request count and first
+  and last seen are now read from the index, and its errors, domains, URLs,
+  agents and methods from its latest 20,000 requests — the page says so when
+  that is not all of them. It took nearly five minutes for the busiest address
+  on the server above.
+- Stored requests take about a quarter of the disk space they did. Requests
+  already stored keep the old form until they age out (`RAW_RETENTION_HOURS`).
+  After that, the database file can be shrunk to its contents with the new
+  `src/tools/vacuum.js` — see README §5, "Shrinking the database file".
+
+### Added
+
+- `src/tools/perf.js` reports what the database holds and how long each query
+  behind the main pages takes, for working out why an installation is slow.
+
 ## [1.2.2] — 2026-10-11
 
 ### Fixed
@@ -179,6 +218,7 @@ First public release.
   filesystem, no Linux capabilities and `no-new-privileges`.
 - Works on phones: slide-in menu, readable request lists, folding filters.
 
+[1.2.3]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.2.3
 [1.2.2]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.2.2
 [1.2.1]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.2.1
 [1.2.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.2.0

@@ -15,6 +15,7 @@ import { Accumulator, hourBucket } from '../ingest/rollup.js';
 import { visitorHash } from '../ingest/visits.js';
 import { notoolkitEndpoint } from '../config.js';
 import { describeRequest } from '../enrich/notoolkit.js';
+import { packRaw, unpackRaw } from '../util/rawlog.js';
 import { parseChangelog } from '../release.js';
 
 let failures = 0;
@@ -362,6 +363,13 @@ group('notoolkit API', () => {
     threw = true;
   }
   ok('anything but an address is refused', threw, true);
+});
+
+group('Stored log lines', () => {
+  const line = JSON.stringify({ request: { host: 'example.com', uri: '/ü?q=1' }, status: 200, msg: 'x'.repeat(500) });
+  const packed = packRaw(line);
+  ok('round trip', unpackRaw(packed), line);
+  ok('compressed', packed.length < line.length / 2, true);
 });
 
 group('Changelog', () => {
