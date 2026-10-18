@@ -1,7 +1,7 @@
 import { useApi } from '../lib/useApi.js';
 import { Banner, Chip, Empty, Loading, Panel, Stat } from '../components/ui.jsx';
 import ReleaseNotes from '../components/ReleaseNotes.jsx';
-import { compact, dateTime, num, pct, relative } from '../lib/format.js';
+import { compact, dateTime, keptFor, num, pct, relative } from '../lib/format.js';
 
 /** The running version's notes from CHANGELOG.md, with earlier releases folded away. */
 function Releases({ about }) {
@@ -91,7 +91,7 @@ export default function Health({ ctx }) {
 
       <div className="grid stats" style={{ marginBottom: 14 }}>
         <Stat label="Stored requests" value={compact(ingest.counts.events)}
-              sub={`raw window: ${meta.data?.retention?.rawHours ?? '—'}h`} />
+              sub={!meta.data ? "—" : keptFor(meta.data.retention?.rawHours) ? `kept for ${keptFor(meta.data.retention.rawHours)}` : "kept until the size limit"} />
         <Stat label="Awaiting rollup" value={compact(ingest.counts.pending)}
               tone={ingest.counts.pending > 100000 ? 'amber' : undefined}
               sub="events not yet aggregated" />

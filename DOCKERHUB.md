@@ -101,11 +101,12 @@ be owned by the `--user` you run as. Over plain HTTP, also set
 |---|---|---|
 | `AUTH_USERS` | — | **required**; `user:password` or `user:scrypt$…`, comma-separated |
 | `CADDY_MANAGE` | `true` | `false` removes the Caddy configuration pages entirely |
-| `CADDY_EDITORS` | everyone | users allowed to change Caddy's configuration |
+| `CADDY_EDITORS` | everyone | users allowed to change Caddy's configuration and the Settings page |
 | `NOTOOLKIT_ENABLED` | `true` | `false` stops all outbound lookups |
 | `COOKIE_SECURE` | `true` | `false` only for plain-HTTP access on a trusted network |
 | `RETENTION_DAYS` | `365` | how long statistics are kept |
-| `RAW_RETENTION_HOURS` | `48` | how long individual requests are kept |
+| `RAW_RETENTION_HOURS` | `48` | how long individual requests are kept (0 = until the size limit); also on the Settings page |
+| `MAX_DB_SIZE` | no limit | largest the database may grow, e.g. `10GB`; also on the Settings page |
 | `TZ` | `UTC` | time zone |
 
 Every setting is documented in

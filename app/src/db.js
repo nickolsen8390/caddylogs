@@ -178,6 +178,31 @@ export function openReadOnly() {
   return db;
 }
 
+/**
+ * Bytes of data the database holds, not counting space freed by deletions
+ * and awaiting reuse — which SQLite keeps inside the file, so the file can be
+ * larger than this.
+ */
+export function usedBytes(handle = getDb()) {
+  const pageSize = handle.pragma('page_size', { simple: true });
+  const pages = handle.pragma('page_count', { simple: true });
+  const free = handle.pragma('freelist_count', { simple: true });
+  return (pages - free) * pageSize;
+}
+
+/** Size of the database file and its write-ahead log, in bytes. */
+export function fileBytes() {
+  let total = 0;
+  for (const suffix of ['', '-wal']) {
+    try {
+      total += fs.statSync(config.dbPath + suffix).size;
+    } catch {
+      /* no WAL file yet */
+    }
+  }
+  return total;
+}
+
 /** Wrap a function in an IMMEDIATE transaction (write lock taken up front). */
 export function tx(fn) {
   return getDb().transaction(fn);

@@ -277,6 +277,14 @@ CREATE TABLE IF NOT EXISTS ingest_stats (
   malformed  INTEGER NOT NULL DEFAULT 0
 );
 
+-- Settings saved from the Settings page (settings.js); .env gives defaults.
+CREATE TABLE IF NOT EXISTS settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,      -- JSON
+  updated_at INTEGER NOT NULL,
+  username   TEXT
+);
+
 -- Every version of the Caddyfile this interface has applied, plus the on-disk
 -- version it replaced the first time, so any change can be rolled back.
 CREATE TABLE IF NOT EXISTS caddy_history (

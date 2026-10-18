@@ -7,6 +7,17 @@ import { readProviderHealth } from '../enrich/health.js';
 import { releaseInfo } from '../release.js';
 import { hub, makeFilter } from './stream.js';
 import { logger } from '../util/log.js';
+import { usedBytes, fileBytes } from '../db.js';
+import {
+  getSettings, defaultSettings, saveSettings, settingsHistory, retentionInfo, MIN_DB_SIZE_MB,
+} from '../settings.js';
+
+/**
+ * Who may change configuration — the Caddyfile and the Settings page alike.
+ * CADDY_EDITORS lists them; empty means every signed-in user.
+ */
+const canConfigure = (req) =>
+  !config.caddy.editors.length || config.caddy.editors.includes(req.session?.username);
 
 const log = logger('api');
 
@@ -197,7 +208,7 @@ export async function registerApi(app) {
       filters: active,
       // Requests are only retained for the raw window, so the UI can say
       // "nothing in the last N hours" instead of implying "never happened".
-      retentionHours: config.retention.rawHours,
+      retentionHours: retentionInfo().hours,
       // A count cannot stop early, so it is only taken when the query is
       // selective enough to be cheap. Broad searches report it as unknown
       // rather than blocking the server to find out.
@@ -294,13 +305,58 @@ export async function registerApi(app) {
       retention: {
         days: config.retention.days,
         hourlyDays: config.retention.hourlyDays,
-        rawHours: config.retention.rawHours,
+        // null when requests are kept until the size limit (untilFull).
+        rawHours: retentionInfo().hours,
+        untilFull: retentionInfo().untilFull,
+        maxDbSizeMb: retentionInfo().maxDbSizeMb,
+        rawFrom: Q.oldestRetainedEvent(),
       },
       enrichment,
       providers,
       warnings: buildWarnings(enrichment, providers),
       streamPollMs: config.stream.pollMs,
     };
+  });
+
+  // --- settings ------------------------------------------------------------
+
+  app.get('/api/settings', rl, async (req) => {
+    const events = Q.ingestStats().counts.events;
+    const oldest = Q.oldestRetainedEvent();
+    const used = usedBytes();
+    const spanHours = oldest ? Math.max(1, (Date.now() - oldest) / 3_600_000) : null;
+    return {
+      settings: getSettings(),
+      defaults: defaultSettings(),
+      history: settingsHistory(),
+      canEdit: canConfigure(req),
+      limits: { minDbSizeMb: MIN_DB_SIZE_MB },
+      usage: {
+        usedBytes: used,
+        fileBytes: fileBytes(),
+        storedRequests: events,
+        oldestRequest: oldest,
+        // Rough guide for choosing a size: all data held divided by the
+        // requests stored, at the current request rate. Overstates it a
+        // little (statistics are counted in), and a lot while requests from
+        // before 1.2.3 still carry their uncompressed log line.
+        requestsPerHour: spanHours ? Math.round(events / spanHours) : null,
+        bytesPerRequest: events ? Math.round(used / events) : null,
+      },
+    };
+  });
+
+  app.post('/api/settings', rl, async (req, reply) => {
+    if (!canConfigure(req)) return reply.code(403).send({ error: 'forbidden' });
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const changes = {};
+    for (const key of ['rawRetentionHours', 'maxDbSizeMb']) {
+      if (body[key] !== undefined) changes[key] = Number(body[key]);
+    }
+    const result = saveSettings(changes, req.session?.username);
+    if (!result.ok) return reply.code(400).send({ error: 'invalid', problems: result.problems });
+    log.info('settings changed', { username: req.session?.username, ...result.settings });
+    return { settings: result.settings };
   });
 
   app.get('/api/health', rl, async () => {

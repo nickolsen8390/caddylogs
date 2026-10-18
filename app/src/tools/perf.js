@@ -15,8 +15,10 @@ import { performance } from 'node:perf_hooks';
 import { config } from '../config.js';
 import * as store from '../db.js';
 import * as Q from '../queries.js';
+import { getSettings } from '../settings.js';
 
 const db = store.openReadOnly ? store.openReadOnly() : store.getDb();
+const usedBytes = (h) => (h.pragma('page_count', { simple: true }) - h.pragma('freelist_count', { simple: true })) * h.pragma('page_size', { simple: true });
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 const now = Date.now();
@@ -77,7 +79,11 @@ console.log(`  spanning           ${((ev.hi - ev.lo) / HOUR).toFixed(1)} hours`)
 console.log(`  per hour, average  ${n(Math.round(ev.n / Math.max(1, (ev.hi - ev.lo) / HOUR)))}`);
 console.log(`  log line, inline   ${each(inline)}  (oldest 20,000 rows; written before 1.2.3)`);
 console.log(`  log line, packed   ${each(packed)}  (newest 20,000 rows)`);
-console.log(`  RAW_MAX_ROWS       ${n(config.retention.rawMaxRows)}`);
+{
+  const s = getSettings();
+  console.log(`  retention          ${s.rawRetentionHours ? `${n(s.rawRetentionHours)} hours` : 'until the size limit'}`);
+  console.log(`  size limit         ${s.maxDbSizeMb ? mb(s.maxDbSizeMb * 1_048_576) : 'none'}  (data held now: ${mb(usedBytes(db))})`);
+}
 
 section('Aggregate rows');
 for (const r of db.prepare('SELECT gran, COUNT(*) AS n FROM dims GROUP BY gran').all()) {

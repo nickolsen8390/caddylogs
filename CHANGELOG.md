@@ -4,6 +4,44 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org): a new major version (2.0.0) is the
 only kind that can require you to change anything when upgrading.
 
+## [1.3.0] — 2026-10-18
+
+### Added
+
+- A **Settings** page, for how long individual requests are kept and how
+  large the database may grow. Changes apply within about ten minutes, with
+  no restart. Users listed in `CADDY_EDITORS` (everyone, when that is empty)
+  can change them; others can view them.
+  - Keep stored requests for any number of hours or days — or until the
+    database reaches its size limit, which keeps as much history as the
+    space allows.
+  - A database size limit. When it is reached, the oldest stored requests
+    are deleted first, whatever the retention says — then, only if those are
+    down to their last hour, the oldest days of statistics. The page shows
+    how much one day of requests takes at the current rate, and how much
+    history a limit would hold.
+  - `.env` gives the starting values: `RAW_RETENTION_HOURS` (now accepts 0,
+    for "until the size limit") and the new `MAX_DB_SIZE` (e.g. `10GB`).
+- Requests can be searched by time: a From and To time, or a quick choice of
+  the last 15 minutes up to 7 days. A search in a time range starts there,
+  instead of walking back to it from the newest request.
+
+### Changed
+
+- **The live log stream and the request explorer are now one page,
+  Requests.** It opens streaming, as the log stream did. Searching — with
+  everything the request explorer could do — pauses the stream and lists the
+  matching requests; Reset, or "Back to live", resumes it. Links to the old
+  log stream page open the new one.
+- A search that has not found a page of matches when it reaches its time
+  limit keeps searching further back on its own, for up to a dozen rounds,
+  before offering a button to continue.
+- Clicking a value on the dashboard, Traffic or domain pages searches the
+  requests behind it over the period that page was showing, rather than from
+  the newest request back.
+- `RAW_MAX_ROWS` is no longer used: the size limit replaces it as the way to
+  bound disk use. A warning is logged if it is still set.
+
 ## [1.2.3] — 2026-10-14
 
 ### Fixed
@@ -218,6 +256,7 @@ First public release.
   filesystem, no Linux capabilities and `no-new-privileges`.
 - Works on phones: slide-in menu, readable request lists, folding filters.
 
+[1.3.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.3.0
 [1.2.3]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.2.3
 [1.2.2]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.2.2
 [1.2.1]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.2.1

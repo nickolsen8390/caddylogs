@@ -1,18 +1,20 @@
-// Retention, downsampling and compaction.
+// Retention, downsampling, compaction and the size limit.
 //
-// Three independent knobs, all from .env:
-//   RAW_RETENTION_HOURS   individual request rows (live stream, drill-downs)
-//   HOURLY_RETENTION_DAYS hourly aggregates, folded into daily rows when older
-//   RETENTION_DAYS        daily aggregates — the long-term history
+//   raw request retention  Settings page (RAW_RETENTION_HOURS in .env to start)
+//                          — individual requests: live view, drill-downs
+//   database size limit    Settings page (MAX_DB_SIZE) — overrides the rest
+//   HOURLY_RETENTION_DAYS  hourly aggregates, folded into daily rows when older
+//   RETENTION_DAYS         daily aggregates — the long-term history
 //
 // Because aggregates live in SQLite and are checkpointed independently of the
 // log files, rotating or deleting a Caddy log never loses statistics.
 
-import { getDb } from './db.js';
+import { getDb, usedBytes } from './db.js';
 import { config } from './config.js';
 import { logger } from './util/log.js';
 import { DAY, oldestOpenVisitHour } from './ingest/rollup.js';
 import { SALT_PREFIX, forgetSalts } from './ingest/visits.js';
+import { rawRetentionMs, maxDbBytes } from './settings.js';
 
 const log = logger('maintain');
 
@@ -206,35 +208,105 @@ function compactDims(db, { early = true, late = true, budgetMs = 20_000 } = {}) 
   return compacted;
 }
 
+/**
+ * Original log lines whose request is gone. Requests are pruned oldest first
+ * and ids only grow, so that is everything below the oldest remaining id.
+ */
+function dropOrphanedRaw(db) {
+  return db
+    .prepare('DELETE FROM events_raw WHERE id < (SELECT COALESCE(MIN(id), 9e18) FROM events)')
+    .run().changes;
+}
+
+/**
+ * Stored requests past the retention time (none, when they are kept until
+ * the size limit). Only requests already aggregated are pruned, so a rollup
+ * backlog can never cause silent data loss.
+ */
+function pruneRequests(db) {
+  const keepMs = rawRetentionMs();
+  const events = Number.isFinite(keepMs)
+    ? db.prepare('DELETE FROM events WHERE ts < ? AND rolled = 1').run(Date.now() - keepMs).changes
+    : 0;
+  return { events, eventsRaw: dropOrphanedRaw(db) };
+}
+
+const SIZE_CHUNK = 20_000; // stored requests deleted per step
+const KEEP_REQUESTS_MS = 3_600_000; // never below the last hour of requests
+const KEEP_AGGREGATES_DAYS = 7; // nor the last week of statistics
+let warnedTooSmall = 0;
+
+/**
+ * Hold the database under the size limit from the Settings page, whatever
+ * the retention settings say: the oldest stored requests go first, then —
+ * only if those are down to their last hour — the oldest days of statistics.
+ * Trims to 95% of the limit so it is not hit again within minutes.
+ *
+ * The limit is on the data held, not the file: SQLite reuses freed space but
+ * does not shrink the file, so the file settles at about the limit and stays
+ * there (src/tools/vacuum.js gives space back after a limit is lowered).
+ */
+export function enforceSizeLimit(db, { budgetMs = 30_000 } = {}) {
+  const limit = maxDbBytes();
+  if (!limit) return null;
+  let used = usedBytes(db);
+  if (used <= limit) return null;
+
+  const started = Date.now();
+  const before = used;
+  const target = limit * 0.95;
+  const out = { requests: 0, statDays: 0 };
+  const oldestRequests = db.prepare(
+    `DELETE FROM events WHERE id IN (
+       SELECT id FROM events WHERE rolled = 1 AND ts < ? ORDER BY id LIMIT ${SIZE_CHUNK})`
+  );
+
+  while (used > target && Date.now() - started < budgetMs) {
+    const n = oldestRequests.run(Date.now() - KEEP_REQUESTS_MS).changes;
+    if (n) {
+      out.requests += n;
+      dropOrphanedRaw(db);
+    } else {
+      // Requests are down to their last hour: the oldest day of statistics.
+      const oldest = db.prepare('SELECT MIN(bucket) AS b FROM rollup').get().b;
+      const floor = nowSec() - KEEP_AGGREGATES_DAYS * DAY;
+      if (oldest === null || oldest >= floor) {
+        if (Date.now() - warnedTooSmall > 6 * 3_600_000) {
+          warnedTooSmall = Date.now();
+          log.warn('database size limit is too small to keep the last hour of requests and the last week of statistics', {
+            limitMb: Math.round(limit / 1_048_576),
+            usedMb: Math.round(used / 1_048_576),
+          });
+        }
+        break;
+      }
+      const end = Math.floor(oldest / DAY) * DAY + DAY;
+      db.transaction(() => {
+        for (const table of ['rollup', 'dims', 'visitor_seen']) {
+          db.prepare(`DELETE FROM ${table} WHERE bucket < ?`).run(end);
+        }
+      })();
+      out.statDays += 1;
+    }
+    used = usedBytes(db);
+  }
+
+  db.pragma('wal_checkpoint(PASSIVE)');
+  log.info('pruned to the database size limit', {
+    limitMb: Math.round(limit / 1_048_576),
+    beforeMb: Math.round(before / 1_048_576),
+    afterMb: Math.round(used / 1_048_576),
+    ...out,
+    done: used <= target,
+  });
+  return out;
+}
+
 /** Delete data past its retention window. */
 function prune(db) {
   const out = {};
 
-  const rawCutoff = Date.now() - config.retention.rawHours * 3_600_000;
-  // Only prune events that have already been aggregated, so a rollup backlog
-  // can never cause silent data loss.
-  out.events = db
-    .prepare('DELETE FROM events WHERE ts < ? AND rolled = 1')
-    .run(rawCutoff).changes;
-
-  // Safety valve on row count, independent of age.
-  const count = db.prepare('SELECT COUNT(*) AS n FROM events').get().n;
-  if (count > config.retention.rawMaxRows) {
-    const excess = count - config.retention.rawMaxRows;
-    out.eventsOverflow = db
-      .prepare(
-        `DELETE FROM events WHERE id IN (
-           SELECT id FROM events WHERE rolled = 1 ORDER BY id LIMIT ?
-         )`
-      )
-      .run(excess).changes;
-  }
-
-  // Their original log lines. Both deletions above take the oldest rows, and
-  // ids only grow, so everything below the oldest remaining id is unneeded.
-  out.eventsRaw = db
-    .prepare('DELETE FROM events_raw WHERE id < (SELECT COALESCE(MIN(id), 9e18) FROM events)')
-    .run().changes;
+  Object.assign(out, pruneRequests(db));
 
   const dailyCutoff = nowSec() - config.retention.days * DAY;
   out.rollup = db.prepare('DELETE FROM rollup WHERE bucket < ?').run(dailyCutoff).changes;
@@ -252,10 +324,11 @@ function prune(db) {
     .prepare('DELETE FROM visits WHERE touched < ? AND (closed = 1 OR touched < ?)')
     .run(Date.now() - 26 * 3_600_000, Date.now() - 7 * 86_400_000).changes;
 
-  // Visitor salts, once no stored request from that day can still need one.
-  // Afterwards that day's visitor ids cannot be recomputed from an address.
-  const keepDays = Math.ceil(config.retention.rawHours / 24) + 2;
-  const oldestDay = Math.floor(Date.now() / 86_400_000) - keepDays;
+  // Visitor salts, once no stored request from that day can still need one
+  // (re-reading a stored request can derive its visitor again). Afterwards
+  // that day's visitor ids cannot be recomputed from an address.
+  const oldestStored = db.prepare('SELECT MIN(ts) AS ts FROM events').get().ts ?? Date.now();
+  const oldestDay = Math.min(Math.floor(oldestStored / 86_400_000), Math.floor(Date.now() / 86_400_000) - 2);
   const dropSalt = db.prepare('DELETE FROM meta WHERE key = ?');
   out.salts = 0;
   for (const { key } of db.prepare('SELECT key FROM meta WHERE key LIKE ?').all(`${SALT_PREFIX}%`)) {
@@ -283,6 +356,7 @@ export function runMaintenance() {
     const pruned = prune(db);
     foldHourlyToDaily(db);
     compactDims(db);
+    enforceSizeLimit(db);
     db.pragma('wal_checkpoint(PASSIVE)');
     db.prepare('PRAGMA optimize').run();
     log.info('maintenance complete', pruned);
@@ -291,28 +365,41 @@ export function runMaintenance() {
   }
 }
 
-/** Between full runs, keep exploding dimensions trimmed (see compactDims). */
-function runEarlyCompaction() {
+/**
+ * Between full runs: keep exploding dimensions trimmed (see compactDims), and
+ * apply the retention time and size limit — a busy server can cross the
+ * limit in well under an hour, and a change on the Settings page should not
+ * wait for the next full run.
+ */
+function runFrequent() {
   try {
-    compactDims(getDb(), { late: false });
+    const db = getDb();
+    compactDims(db, { late: false });
+    pruneRequests(db);
+    enforceSizeLimit(db);
   } catch (err) {
-    log.error('compaction failed', { err: String(err) });
+    log.error('frequent maintenance failed', { err: String(err) });
   }
 }
 
-let earlyTimer = null;
+let frequentTimer = null;
 
 export function startMaintenance() {
   if (timer) return;
+  if (config.retention.legacyMaxRows !== null) {
+    log.warn('RAW_MAX_ROWS is no longer used; limit the database by size on the Settings page (or MAX_DB_SIZE in .env)', {
+      RAW_MAX_ROWS: config.retention.legacyMaxRows,
+    });
+  }
   // Stagger the first run so it does not collide with ingest warm-up.
   setTimeout(runMaintenance, 60_000);
   timer = setInterval(runMaintenance, 3600_000);
-  earlyTimer = setInterval(runEarlyCompaction, 10 * 60_000);
+  frequentTimer = setInterval(runFrequent, 10 * 60_000);
 }
 
 export function stopMaintenance() {
   clearInterval(timer);
-  clearInterval(earlyTimer);
+  clearInterval(frequentTimer);
   timer = null;
-  earlyTimer = null;
+  frequentTimer = null;
 }

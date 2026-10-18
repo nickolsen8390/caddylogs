@@ -200,6 +200,7 @@ export function Icon({ name }) {
     requests: 'M10 4h11M10 12h11M10 20h11M4 4h.01M4 12h.01M4 20h.01',
     stream: 'M4 6h16M4 12h10M4 18h13',
     health: 'M3 12h4l2 6 4-14 2 8h6',
+    settings: 'M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1M15 4v4M9 10v4M17 16v4',
     caddy: 'M4 7h10M18 7h2M4 17h2M10 17h10M16 4v6M8 14v6',
   };
   return (

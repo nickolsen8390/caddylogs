@@ -49,6 +49,29 @@ const PAGEVIEW_DIMS = {
 /** Dimensions that cannot be resolved back to individual requests. */
 const NOT_DRILLABLE = new Set(['(other)']);
 
+/** The time ranges a page can show, in milliseconds. */
+export const RANGE_MS = {
+  '1h': 3_600_000,
+  '6h': 6 * 3_600_000,
+  '24h': 86_400_000,
+  '7d': 7 * 86_400_000,
+  '30d': 30 * 86_400_000,
+  '90d': 90 * 86_400_000,
+  '365d': 365 * 86_400_000,
+};
+
+/**
+ * The period a drill-down searches: the page's time range as a start time,
+ * so the request search begins at the right end of it instead of walking
+ * back to it from the newest request. Pages pass `range`; a caller that
+ * already has a start passes `from`.
+ */
+function since(context) {
+  if (context.from) return { from: context.from };
+  const span = RANGE_MS[context.range];
+  return span ? { from: Date.now() - span } : {};
+}
+
 /**
  * Link to the requests behind one dimension value.
  * @param {string} dim  aggregate dimension, e.g. 'ip' or 'browser'
@@ -71,23 +94,23 @@ export function drillTo(dim, value, context = {}) {
     return `/requests${qs({
       bots: v === 'bot' ? 'only' : 'exclude',
       host: context.host,
-      range: context.range,
+      ...since(context),
     })}`;
   }
 
   // The unresolved-ASN bucket is a real filter (asn=0), the label is not.
   if (dim === 'asn' && (v === '0' || v.toLowerCase() === 'unresolved')) {
-    return `/requests${qs({ asn: '0', host: context.host, range: context.range })}`;
+    return `/requests${qs({ asn: '0', host: context.host, ...since(context) })}`;
   }
 
   if (PAGEVIEW_DIMS[dim]) {
     const [key, extra] = PAGEVIEW_DIMS[dim];
-    return `/requests${qs({ [key]: v, ...extra, host: context.host, range: context.range })}`;
+    return `/requests${qs({ [key]: v, ...extra, host: context.host, ...since(context) })}`;
   }
 
   const param = DIM_TO_PARAM[dim];
   if (!param) return null;
-  return `/requests${qs({ [param]: v, host: context.host, range: context.range })}`;
+  return `/requests${qs({ [param]: v, host: context.host, ...since(context) })}`;
 }
 
 /** Human-readable name for a filter chip. */

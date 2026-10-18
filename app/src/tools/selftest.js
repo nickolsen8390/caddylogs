@@ -13,7 +13,8 @@ import {
 } from '../ingest/traffic.js';
 import { Accumulator, hourBucket } from '../ingest/rollup.js';
 import { visitorHash } from '../ingest/visits.js';
-import { notoolkitEndpoint } from '../config.js';
+import { notoolkitEndpoint, sizeMb } from '../config.js';
+import { validateSettings } from '../settings.js';
 import { describeRequest } from '../enrich/notoolkit.js';
 import { packRaw, unpackRaw } from '../util/rawlog.js';
 import { parseChangelog } from '../release.js';
@@ -370,6 +371,22 @@ group('Stored log lines', () => {
   const packed = packRaw(line);
   ok('round trip', unpackRaw(packed), line);
   ok('compressed', packed.length < line.length / 2, true);
+});
+
+group('Settings', () => {
+  ok('size in GB', sizeMb('20GB', 0), 20 * 1024);
+  ok('size in MB', sizeMb('500mb', 0), 500);
+  ok('fractional TB', sizeMb('1.5 TB', 0), 1.5 * 1024 * 1024);
+  ok('bare number is MB', sizeMb('750', 0), 750);
+  ok('empty is the default', sizeMb('', 7), 7);
+  ok('nonsense is the default', sizeMb('lots', 7), 7);
+
+  const valid = (s) => Object.keys(validateSettings(s));
+  ok('48 hours, no limit', valid({ rawRetentionHours: 48, maxDbSizeMb: 0 }), []);
+  ok('until full, with a limit', valid({ rawRetentionHours: 0, maxDbSizeMb: 10240 }), []);
+  ok('until full needs a limit', valid({ rawRetentionHours: 0, maxDbSizeMb: 0 }), ['rawRetentionHours']);
+  ok('limit too small', valid({ rawRetentionHours: 48, maxDbSizeMb: 10 }), ['maxDbSizeMb']);
+  ok('fractional hours refused', valid({ rawRetentionHours: 1.5, maxDbSizeMb: 0 }), ['rawRetentionHours']);
 });
 
 group('Changelog', () => {

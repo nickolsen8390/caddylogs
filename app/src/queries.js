@@ -21,13 +21,14 @@ import { config } from './config.js';
 import { isPrivateIp } from './util/net.js';
 import { PAGEVIEW_SQL } from './ingest/traffic.js';
 import { readRaw } from './util/rawlog.js';
+import { retentionInfo } from './settings.js';
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
 
 /** Sub-hour resolution is only possible while raw events are still retained. */
 function rawWindowStart() {
-  return Date.now() - config.retention.rawHours * HOUR_MS;
+  return oldestRetainedEvent() ?? Date.now();
 }
 
 /** Pick a sensible bucket size (seconds) for a time span. */
@@ -617,6 +618,24 @@ function parseCursor(before) {
  * time budget, not at the end of the data: `searchedBackTo` says how far back
  * it got, and following the cursor searches older requests.
  */
+/**
+ * The id range a search walks. With a From/To time it is the ids of the
+ * requests in that period, read from the ts index, so a search in a past
+ * hour starts there instead of walking back to it from the newest request.
+ * The time filter itself is still applied: ids follow arrival order, which
+ * a backfill of old logs does not keep.
+ */
+function idBounds(db, f) {
+  const from = Number(f.from);
+  const to = Number(f.to);
+  const hasFrom = f.from !== undefined && f.from !== '' && Number.isFinite(from);
+  const hasTo = f.to !== undefined && f.to !== '' && Number.isFinite(to);
+  if (!hasFrom && !hasTo) return db.prepare('SELECT MIN(id) AS lo, MAX(id) AS hi FROM events').get();
+  return db
+    .prepare('SELECT MIN(id) AS lo, MAX(id) AS hi FROM events WHERE ts >= @from AND ts < @to')
+    .get({ from: hasFrom ? from : 0, to: hasTo ? to : Number.MAX_SAFE_INTEGER });
+}
+
 export function searchEvents(filters = {}, { limit = 100, before = null } = {}) {
   const db = getDb();
   const capped = Math.min(500, Math.max(1, limit));
@@ -647,7 +666,7 @@ export function searchEvents(filters = {}, { limit = 100, before = null } = {}) 
     };
   }
 
-  const bounds = db.prepare('SELECT MIN(id) AS lo, MAX(id) AS hi FROM events').get();
+  const bounds = idBounds(db, filters);
   if (!bounds.hi) {
     return {
       rows: [], nextCursor: null, windowed: true, pageFull: false,
@@ -761,7 +780,7 @@ export function eventById(id) {
       found: false,
       reason: 'pruned',
       retainedFrom: oldestRetainedEvent(),
-      retentionHours: config.retention.rawHours,
+      retentionHours: retentionInfo().hours,
     };
   }
 
@@ -865,7 +884,7 @@ export function ipDetail(ip, fromMs, toMs, host = null) {
     statuses: top(by.status),
     methods: top(by.method),
     retainedFrom: oldestRetainedEvent(),
-    retentionHours: config.retention.rawHours,
+    retentionHours: retentionInfo().hours,
   };
 }
 

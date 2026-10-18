@@ -27,10 +27,14 @@ included compose file runs Caddy and the interface together.
   agent, URL, country, ASN, TLS cipher or latency bucket all resolve to the
   individual requests behind them, and source addresses get their own page with
   enrichment and behaviour.
-- **Log stream** — near-real-time tail with pause, filters, and per-request
-  JSON pretty-print.
+- **Requests** — the live log stream and the request search in one page. It
+  streams new requests as they arrive, with pause and per-request JSON
+  pretty-print; searching — by any field, free text, or a time range — pauses
+  the stream and lists the matches, and Reset goes back to live.
 - **Health** — what the ingester is reading and whether IP enrichment is
   working.
+- **Settings** — how long individual requests are kept, and a size limit for
+  the database.
 
 Image: [`victimofareload/caddylogs`](https://hub.docker.com/r/victimofareload/caddylogs)
 (linux/amd64 and linux/arm64) · License: [MIT](LICENSE) ·
@@ -266,7 +270,7 @@ Everything lives in one SQLite file on the `data` volume, in three tiers:
 
 | Tier | Contents | Governed by |
 |---|---|---|
-| `events` | individual requests | `RAW_RETENTION_HOURS` (48h), capped by `RAW_MAX_ROWS` |
+| `events` | individual requests | Settings page: a time (48h by default), or until the size limit |
 | `events_raw` | each request's original JSON line, compressed | the same as `events` |
 | `visits` | visits that may still grow (working state for the Traffic page) | a day after a visit's last page view |
 | `visitor_seen` | which visitor ids had a page view in each hour, for exact visitor counts | `HOURLY_RETENTION_DAYS` (45d) |
@@ -290,7 +294,7 @@ hour, typically an API where every lookup is a URL never seen before — is
 trimmed as soon as that hour is over (`DIM_COMPACT_AFTER_HOURS`) rather than
 after a week; otherwise every list on every page would read through millions
 of rows. Ordinary sites never reach that, and keep every value for the week.
-The trimmed URLs are still in the stored requests for `RAW_RETENTION_HOURS`.
+The trimmed URLs are still in the stored requests, for as long as those are kept.
 
 Maintenance runs hourly inside the `ingest` container, with the early trim
 every 10 minutes. Nothing external to schedule.
@@ -300,7 +304,7 @@ every 10 minutes. Nothing external to schedule.
 SQLite reuses the space of deleted rows but does not return it to the disk.
 Upgrading to 1.2.3 frees most of a busy server's database — requests stop
 carrying their uncompressed log line — but only as the old requests age out,
-and the file keeps its size. Once `RAW_RETENTION_HOURS` has passed, it can be
+and the file keeps its size. Once the old requests have aged out, it can be
 rewritten without the unused space:
 
 ```bash
@@ -366,16 +370,44 @@ background, in the first minutes after it starts.
 
 ### What drill-down can and cannot reach
 
-Clicking a value opens the **request explorer** (`/requests`) filtered to it.
-That reads `events`, so it only reaches back `RAW_RETENTION_HOURS` — the UI
-says so on every such view rather than showing an empty list that reads as
-"this never happened".
+Clicking a value opens the **Requests** page (`/requests`) as a search for it,
+over the period the page you came from was showing. That reads `events`, so
+it only reaches back as far as individual requests are kept — the UI says so
+on every such view rather than showing an empty list that reads as "this
+never happened".
 
 Aggregates have no such limit: the counts on the dashboard and domain pages
 cover the full `RETENTION_DAYS`. The split is deliberate — keeping every
 individual request for a year would be enormous, while the counters are small.
-If you routinely need to inspect requests further back, raise
-`RAW_RETENTION_HOURS`; it is the largest tier on disk, so raise it knowingly.
+If you routinely need to inspect requests further back, keep them longer on
+the Settings page; they are the largest tier on disk, so do it knowingly.
+
+A search of a rare value stops at a time budget on each round trip, so the
+page searches further back on its own — up to a dozen rounds — before
+offering a button to keep going. Searching a time range starts at that range,
+so finding requests from an hour last week does not mean walking back to it.
+
+### Retention and the size limit
+
+On the **Settings** page (editable by `CADDY_EDITORS`, or everyone when that
+is empty):
+
+- **Stored requests** are kept for a time you choose, in hours or days — or
+  until the database reaches its size limit, which keeps as much history as
+  the space allows.
+- **Size limit**: when the database reaches it, the oldest stored requests
+  are deleted first, whatever the retention says — then, only if those are
+  down to their last hour, the oldest days of statistics. It applies to the
+  data held: SQLite reuses freed space rather than shrinking the file, so the
+  file settles at about the limit.
+
+Changes apply within about ten minutes, with no restart. `.env` gives the
+starting values (`RAW_RETENTION_HOURS`, `MAX_DB_SIZE`).
+
+A large database is a slower one: searching requests and the address pages
+read more data as it grows, and once the database is much larger than the
+memory the server can spare for its file cache, most reads come from disk.
+A few gigabytes keeps the interface quick for most sites.
 
 Filters live entirely in the URL, so any drill-down is a shareable link and the
 back button behaves.
@@ -566,14 +598,15 @@ likely to change:
 | `CADDY_LOG_HOST_PATH` | `./caddy/logs` | Caddy's log directory (read-only to the app) |
 | `CADDY_DATA_PATH` / `CADDY_STATE_PATH` / `CADDY_RUN_PATH` | `./caddy/{data,config,run}` | Caddy's certificates, state, admin socket |
 | `CADDY_IMAGE` | `caddy:2` | Caddy image; use your own build for plugins |
-| `CADDY_EDITORS` | — (everyone) | users allowed to change Caddy's config |
+| `CADDY_EDITORS` | — (everyone) | users allowed to change Caddy's config and the Settings page |
 | `CADDY_MANAGE` | `true` | `false` hides the Caddy menu and turns the configuration API off |
 | `CADDY_LOG_GLOB` | `*.log` | which files to follow |
 | `AUTH_USERS` | — | `user:password` or `user:scrypt$…`, comma-separated |
 | `SESSION_REMEMBER_DAYS` | `30` | lifetime of a "keep me signed in" session, which has no idle timeout; `0` removes the option |
 | `RETENTION_DAYS` | `365` | how long statistics are kept |
 | `HOURLY_RETENTION_DAYS` | `45` | how long hour-level detail is kept |
-| `RAW_RETENTION_HOURS` | `48` | how long individual requests are kept |
+| `RAW_RETENTION_HOURS` | `48` | how long individual requests are kept, to start with (0 = until the size limit); then the Settings page |
+| `MAX_DB_SIZE` | — (no limit) | largest the database may grow, e.g. `10GB`, to start with; then the Settings page |
 | `DIM_HOURLY_MAX` | `2000` | values one dimension may gather in an hour before it is trimmed right away (see §5) |
 | `IGNORE_HOSTS` / `IGNORE_CIDRS` | — | traffic never recorded (healthchecks, monitoring) |
 | `BOT_HEADER_CHECK` | `true` | count a "Chrome" that sends no Sec-Fetch / client-hint headers as a bot |
@@ -648,8 +681,9 @@ At the 1–20M requests/day this is tuned for, expect roughly:
 - `dims`: dominated by distinct URLs and IPs per hour, then bounded by
   `DIM_TOP_N` once compaction kicks in
 
-If the disk grows faster than you like, reduce `RAW_RETENTION_HOURS` first — it
-is by far the largest tier, and it does not affect long-term statistics.
+If the disk grows faster than you like, set a size limit on the Settings page,
+or keep stored requests for less time — they are by far the largest tier, and
+neither affects long-term statistics until the limit is very small.
 
 ### Migrating off the old named volume
 

@@ -8,7 +8,7 @@ import Dashboard from './pages/Dashboard.jsx';
 import Traffic from './pages/Traffic.jsx';
 import Domains from './pages/Domains.jsx';
 import DomainDetail from './pages/DomainDetail.jsx';
-import LogStream from './pages/LogStream.jsx';
+import Settings from './pages/Settings.jsx';
 import Requests from './pages/Requests.jsx';
 import IpDetail from './pages/IpDetail.jsx';
 import Health from './pages/Health.jsx';
@@ -24,9 +24,9 @@ const TITLES = [
   [/^\/traffic/, 'Traffic'],
   [/^\/domains$/, 'Domains'],
   [/^\/domains\//, 'Domain detail'],
-  [/^\/requests/, 'Request explorer'],
+  [/^\/requests/, 'Requests'],
   [/^\/ip\//, 'Source address'],
-  [/^\/logs/, 'Live logs'],
+  [/^\/settings/, 'Settings'],
   [/^\/health/, 'System health'],
   [/^\/caddy\/sites\//, 'Caddy · edit site'],
   [/^\/caddy\/global/, 'Caddy · global options & snippets'],
@@ -34,6 +34,12 @@ const TITLES = [
   [/^\/caddy\/history/, 'Caddy · history'],
   [/^\/caddy/, 'Caddy · sites'],
 ];
+
+/** The live log stream became the Requests page; old links keep their filters. */
+function LogsMoved() {
+  const { search } = useLocation();
+  return <Navigate to={`/requests${search}`} replace />;
+}
 
 /** Optional parts of the interface; the server says which are switched on. */
 const DEFAULT_FEATURES = { caddy: true, notoolkit: true };
@@ -161,11 +167,7 @@ export default function App() {
             <Icon name="domains" /> Domains
           </NavLink>
           <NavLink to="/requests">
-            <Icon name="requests" /> Requests
-          </NavLink>
-          <div className="nav-label">Live</div>
-          <NavLink to="/logs">
-            <Icon name="stream" /> Log stream
+            <Icon name="stream" /> Requests
           </NavLink>
           {features.caddy && (
             <>
@@ -178,6 +180,9 @@ export default function App() {
           <div className="nav-label">System</div>
           <NavLink to="/health">
             <Icon name="health" /> Health
+          </NavLink>
+          <NavLink to="/settings">
+            <Icon name="settings" /> Settings
           </NavLink>
         </nav>
         <div className="sidebar-foot">
@@ -228,7 +233,8 @@ export default function App() {
             <Route path="/domains/:host" element={<DomainDetail ctx={ctx} />} />
             <Route path="/requests" element={<Requests ctx={ctx} />} />
             <Route path="/ip/:ip" element={<IpDetail ctx={ctx} />} />
-            <Route path="/logs" element={<LogStream ctx={ctx} />} />
+            <Route path="/logs" element={<LogsMoved />} />
+            <Route path="/settings" element={<Settings ctx={ctx} />} />
             <Route path="/health" element={<Health ctx={ctx} />} />
             {features.caddy && (
               <Route path="/caddy" element={<CaddyLayout ctx={ctx} />}>

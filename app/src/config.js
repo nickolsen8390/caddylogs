@@ -8,6 +8,15 @@ const int = (v, d) => {
   const n = parseInt(v, 10);
   return Number.isFinite(n) ? n : d;
 };
+/** A size such as 500MB, 20GB or 1.5TB, or a bare number of megabytes, in MB. */
+export function sizeMb(v, d) {
+  if (v === undefined || v === null || String(v).trim() === '') return d;
+  const m = String(v).trim().match(/^(\d+(?:\.\d+)?)\s*(m|mb|mib|g|gb|gib|t|tb|tib)?$/i);
+  if (!m) return d;
+  const unit = (m[2] || 'mb')[0].toLowerCase();
+  const mb = parseFloat(m[1]) * (unit === 't' ? 1024 * 1024 : unit === 'g' ? 1024 : 1);
+  return Math.max(0, Math.round(mb));
+}
 const list = (v) =>
   String(v ?? '')
     .split(',')
@@ -96,8 +105,13 @@ export const config = {
   retention: {
     days: int(env.RETENTION_DAYS, 365),
     hourlyDays: int(env.HOURLY_RETENTION_DAYS, 45),
-    rawHours: int(env.RAW_RETENTION_HOURS, 48),
-    rawMaxRows: int(env.RAW_MAX_ROWS, 5_000_000),
+    // Starting values for the Settings page, which overrides both (settings.js).
+    // 0 hours = keep stored requests until the database reaches its size limit.
+    rawHours: Math.max(0, int(env.RAW_RETENTION_HOURS, 48)),
+    // 0 = no limit. Accepts 500MB, 20GB, 1.5TB, or a number of megabytes.
+    maxDbSizeMb: sizeMb(env.MAX_DB_SIZE, 0),
+    // Replaced by MAX_DB_SIZE in 1.3.0; kept only to warn that it is ignored.
+    legacyMaxRows: env.RAW_MAX_ROWS ?? null,
     dimTopN: int(env.DIM_TOP_N, 250),
     dimCompactAfterDays: int(env.DIM_COMPACT_AFTER_DAYS, 7),
     // A dimension with more values than this in one hour (an API whose every

@@ -313,10 +313,10 @@ export default function DomainDetail({ ctx }) {
         </div>
       </Panel>
 
-      <Panel title="Live requests for this domain" flush>
+      <Panel title="Requests for this domain" flush>
         <div style={{ padding: 12 }}>
-          <Link className="btn sm" to={`/logs?host=${encodeURIComponent(host)}`}>
-            Open the log stream filtered to {host} →
+          <Link className="btn sm" to={`/requests?host=${encodeURIComponent(host)}`}>
+            Show the latest requests to {host} →
           </Link>
         </div>
       </Panel>

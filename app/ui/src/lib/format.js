@@ -33,6 +33,16 @@ export function ms(v) {
   return `${nf1.format(v / 1000)} s`;
 }
 
+/**
+ * How long stored requests are kept, for sentences: "48 hours", "7 days".
+ * null when they are kept until the database's size limit instead.
+ */
+export function keptFor(hours) {
+  if (!hours) return null;
+  if (hours >= 48 && hours % 24 === 0) return `${hours / 24} days`;
+  return hours === 1 ? '1 hour' : `${hours} hours`;
+}
+
 /** Time on site: "45s", "3m 05s", "1h 02m". */
 export function duration(msValue) {
   if (msValue === null || msValue === undefined) return '—';

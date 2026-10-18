@@ -700,6 +700,11 @@ body.nav-locked { overflow: hidden; }
 /* Live log toolbar: on desktop the three groups dissolve into one wrapping
    row, exactly as before; phones stack them. */
 .stream-panel { display: flex; flex-direction: column; height: calc(100vh - 132px); height: calc(100dvh - 132px); }
+/* Requests page while streaming: the search form on top, and the stream
+   filling the rest of the screen and scrolling on its own. */
+.requests-live { display: flex; flex-direction: column; height: calc(100vh - 132px); height: calc(100dvh - 132px); }
+.requests-live > .filter-bar { flex: none; }
+.requests-live > .stream-panel { flex: 1; min-height: 240px; height: auto; }
 .stream-controls, .stream-filters, .stream-stats, .stream-filter-actions { display: contents; }
 .stream-state { font-weight: 620; min-width: 92px; }
 .stream-filters .f-host { width: 150px; }
@@ -826,6 +831,7 @@ body.nav-locked { overflow: hidden; }
 
   /* --- live log toolbar --- */
   .stream-panel { height: calc(100vh - 80px); height: calc(100dvh - 80px); }
+  .requests-live { height: calc(100vh - 80px); height: calc(100dvh - 80px); }
   .stream-bar { flex-direction: column; align-items: stretch; gap: 8px; }
   .stream-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .stream-state { min-width: 0; }

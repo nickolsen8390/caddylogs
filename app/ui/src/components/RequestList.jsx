@@ -7,7 +7,7 @@ import { Link } from 'react-router-dom';
 import { api, ApiError } from '../lib/api.js';
 import { JsonView } from './JsonView.jsx';
 import { Chip, Empty } from './ui.jsx';
-import { bytes, clock, ms, statusClass } from '../lib/format.js';
+import { bytes, clock, keptFor, ms, statusClass } from '../lib/format.js';
 import { countryName, flag } from '../lib/countries.js';
 import { drillTo } from '../lib/drill.js';
 
@@ -140,9 +140,11 @@ function ExpandedRequest({ row, context }) {
       {state === 'gone' && (
         <pre className="log-json faint">
           {`This request is no longer stored.\n\n`}
-          {`Individual requests — and their raw log lines — are kept for `}
-          {problem?.body?.retentionHours ?? '?'}
-          {` hours (RAW_RETENTION_HOURS).\n`}
+          {`Individual requests — and their raw log lines — are kept `}
+          {keptFor(problem?.body?.retentionHours)
+            ? `for ${keptFor(problem.body.retentionHours)}`
+            : 'until the database reaches its size limit'}
+          {` (Settings page).\n`}
           {problem?.body?.retainedFrom
             ? `The oldest one still held is from ${new Date(problem.body.retainedFrom).toLocaleString()}.\n`
             : ''}

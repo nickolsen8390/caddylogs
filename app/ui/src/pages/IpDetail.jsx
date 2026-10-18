@@ -8,7 +8,7 @@ import { Banner, Chip, Empty, Loading, Panel, Stat, TopList } from '../component
 import { RequestList } from '../components/RequestList.jsx';
 import { countryName, flag } from '../lib/countries.js';
 import { drillTo } from '../lib/drill.js';
-import { bytes, compact, dateTime, num, pct, relative } from '../lib/format.js';
+import { bytes, compact, dateTime, keptFor, num, pct, relative } from '../lib/format.js';
 
 export default function IpDetail({ ctx }) {
   const { ip } = useParams();
@@ -47,7 +47,6 @@ export default function IpDetail({ ctx }) {
         </div>
         <div className="hstack" style={{ gap: 6 }}>
           <Link className="btn sm" to={`/requests${qs({ ip, host })}`}>All requests</Link>
-          <Link className="btn sm" to={`/logs${qs({ ip, host })}`}>Watch live</Link>
         </div>
       </div>
 
@@ -114,7 +113,7 @@ export default function IpDetail({ ctx }) {
           sub="from stored statistics"
         />
         <Stat
-          label={`Requests (last ${data.retentionHours}h)`}
+          label={keptFor(data.retentionHours) ? `Requests (last ${keptFor(data.retentionHours)})` : "Requests (stored)"}
           value={compact(live.requests ?? 0)}
           sub="individually inspectable"
         />
@@ -212,7 +211,7 @@ export default function IpDetail({ ctx }) {
             rows={requests.data?.rows ?? []}
             context={ctxLinks}
             className="log-view"
-            empty={`No requests from this address in the last ${data.retentionHours} hours.`}
+            empty={`No requests from this address ${keptFor(data.retentionHours) ? `in the last ${keptFor(data.retentionHours)}` : "among stored requests"}.`}
           />
         )}
       </Panel>
