@@ -15,6 +15,7 @@ import { Accumulator, hourBucket } from '../ingest/rollup.js';
 import { visitorHash } from '../ingest/visits.js';
 import { notoolkitEndpoint, sizeMb } from '../config.js';
 import { validateSettings } from '../settings.js';
+import { makeFilter, SEARCH_ONLY_FILTERS } from '../web/stream.js';
 import { describeRequest } from '../enrich/notoolkit.js';
 import { packRaw, unpackRaw } from '../util/rawlog.js';
 import { parseChangelog } from '../release.js';
@@ -387,6 +388,35 @@ group('Settings', () => {
   ok('until full needs a limit', valid({ rawRetentionHours: 0, maxDbSizeMb: 0 }), ['rawRetentionHours']);
   ok('limit too small', valid({ rawRetentionHours: 48, maxDbSizeMb: 10 }), ['maxDbSizeMb']);
   ok('fractional hours refused', valid({ rawRetentionHours: 1.5, maxDbSizeMb: 0 }), ['rawRetentionHours']);
+});
+
+group('Live stream filters', () => {
+  const row = {
+    host: 'example.com', ip: '203.0.113.9', method: 'GET', path: '/blog/post.html', query: 'a=1',
+    status: 404, ua: 'Mozilla/5.0 Firefox/133.0', referer: 'https://news.ycombinator.com/x',
+    referer_host: 'news.ycombinator.com', country: null, asn: 15169, bot: 0, dur_ms: 42,
+    tls_version: 'TLS 1.3', nav: 1, channel: 'Social',
+  };
+  const keeps = (q) => makeFilter(q)(row);
+  ok('no filters keep everything', keeps({}), true);
+  ok('host matches, any case', keeps({ host: 'Example.COM' }), true);
+  ok('other host', keeps({ host: 'other.org' }), false);
+  ok('status class', keeps({ status: '4xx' }), true);
+  ok('exact status', keeps({ status: '200' }), false);
+  ok('free text, any case', keeps({ q: 'FIREFOX' }), true);
+  ok('free text in the query string', keeps({ q: 'a=1' }), true);
+  ok('URL contains', keeps({ pathq: '/BLOG' }), true);
+  ok('unknown country is XX', keeps({ country: 'XX' }), true);
+  ok('referrer site', keeps({ referer: 'news.ycombinator.com' }), true);
+  ok('file type', keeps({ ext: 'html' }), true);
+  ok('ASN', keeps({ asn: '15169' }), true);
+  ok('slower than', keeps({ minDur: '100' }), false);
+  ok('latency bucket', keeps({ lat: '25-50 ms' }), true);
+  ok('a 404 is not a page view', keeps({ pageview: '1' }), false);
+  ok('channel', keeps({ channel: 'Social' }), true);
+  ok('humans only', keeps({ bots: 'exclude' }), true);
+  ok('all must match', keeps({ host: 'example.com', status: '5xx' }), false);
+  ok('a time range is search-only', SEARCH_ONLY_FILTERS, ['from', 'to']);
 });
 
 group('Changelog', () => {

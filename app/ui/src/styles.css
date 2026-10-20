@@ -287,9 +287,11 @@ html[data-theme='light'] .bar-fill { background: color-mix(in srgb, var(--accent
    The source column is sized in `ch` (this is a monospace view) to fit a full
    IPv4 address plus its flag, and most IPv6 addresses; longer IPv6 addresses
    ellipsize, with the whole value in the tooltip and one click away. */
+/* The time column fits "Oct 17 14:03:22": requests from an earlier day show
+   their date (see stamp() in lib/format.js). */
 .log-row {
   display: grid;
-  grid-template-columns: 88px 44px 60px minmax(0, 1fr) 64px 72px 26ch;
+  grid-template-columns: 15ch 44px 60px minmax(0, 1fr) 64px 72px 26ch;
   gap: 10px; padding: 3px 12px; border-bottom: 1px solid var(--border-soft);
   cursor: pointer; align-items: baseline;
 }
@@ -297,7 +299,7 @@ html[data-theme='light'] .bar-fill { background: color-mix(in srgb, var(--accent
 .log-row .col-ip a:hover { color: var(--blue); text-decoration: underline; }
 @media (max-width: 1100px) {
   /* Drop response size first on narrow screens; the source stays visible. */
-  .log-row { grid-template-columns: 76px 40px 52px minmax(0, 1fr) 64px 26ch; }
+  .log-row { grid-template-columns: 15ch 40px 52px minmax(0, 1fr) 64px 26ch; }
   .log-row .col-size { display: none; }
 }
 .log-row:hover { background: var(--panel-2); }
@@ -408,7 +410,8 @@ table.data a:hover { color: var(--blue); }
   display: flex; flex-direction: column; gap: 3px;
   font-size: 11px; font-weight: 600; color: var(--text-faint);
 }
-.filter-fields .input { width: 100%; font-size: 12.5px; padding: 5px 8px; }
+.filter-fields .input { width: 100%; min-width: 0; max-width: 100%; font-size: 12.5px; padding: 5px 8px; }
+.filter-fields > label { min-width: 0; }
 
 /* ================================================================ caddy */
 
@@ -703,7 +706,7 @@ body.nav-locked { overflow: hidden; }
 /* Requests page while streaming: the search form on top, and the stream
    filling the rest of the screen and scrolling on its own. */
 .requests-live { display: flex; flex-direction: column; height: calc(100vh - 132px); height: calc(100dvh - 132px); }
-.requests-live > .filter-bar { flex: none; }
+.requests-live > .filter-bar, .requests-live > .filter-chips { flex: none; }
 .requests-live > .stream-panel { flex: 1; min-height: 240px; height: auto; }
 .stream-controls, .stream-filters, .stream-stats, .stream-filter-actions { display: contents; }
 .stream-state { font-weight: 620; min-width: 92px; }
@@ -847,7 +850,11 @@ body.nav-locked { overflow: hidden; }
   .filter-bar { padding: 12px; }
   .filter-search { flex-wrap: wrap; }
   .filter-search .input { flex: 1 1 100%; }
-  .filter-fields { grid-template-columns: 1fr 1fr; }
+  /* minmax(0, …), and min-width: 0 below: a grid cell is otherwise as wide as
+     its content's minimum, and date-time inputs and long domain names do not
+     shrink — they pushed the form past the right edge of the screen. */
+  .filter-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .filter-fields .f-time { grid-column: 1 / -1; }
   .filter-fields:not(.open) { display: none; }
 
   /* --- Caddy pages --- */

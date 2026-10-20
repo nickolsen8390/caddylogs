@@ -1,8 +1,11 @@
 // Requests: the live log stream and the request explorer in one page.
 //
-// With no filters it streams — new requests appear at the bottom within about
-// a second. Searching stops the stream and lists the matching requests
-// instead, newest first; Reset clears the search and goes back to live.
+// It streams: new requests appear at the bottom within about a second, with
+// the latest stored ones above and older ones a click away. Filters apply to
+// the stream as well — domain, address, status, free text and the rest. A
+// time range is the one thing a stream cannot honour, so setting one stops
+// the stream and lists the stored requests in that period instead, newest
+// first; "Back to live" drops the time range, and Reset clears everything.
 //
 // Any dimension value from anywhere in the app resolves here as a search.
 // Filters can also be built directly — with the field row, a time range, or
@@ -10,7 +13,7 @@
 // status:4xx). The filter set lives entirely in the URL, so every view is a
 // shareable link and the back button behaves.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api, qs, ApiError } from '../lib/api.js';
 import { useApi, useHostOptions, useLocalState } from '../lib/useApi.js';
@@ -18,7 +21,7 @@ import { Banner, Chip, Loading, Panel } from '../components/ui.jsx';
 import { RequestList } from '../components/RequestList.jsx';
 import { FILTER_KEYS, FILTER_LABELS, filterValueLabel } from '../lib/drill.js';
 import { normalizeFilterValue, parseSearch } from '../lib/search.js';
-import { compact, keptFor, num, relative } from '../lib/format.js';
+import { compact, keptPhrase, num, relative } from '../lib/format.js';
 
 const PAGE = 100;
 /** Requests kept on screen while streaming; older ones scroll away. */
@@ -92,8 +95,8 @@ export default function Requests({ ctx }) {
     }
     return out;
   }, [paramString]);
-  // Any filter at all is a search; none is the live stream.
-  const live = Object.keys(active).length === 0;
+  // A time range is a search of stored requests; anything else streams.
+  const live = !active.from && !active.to;
 
   // Editable copies of the filters. They follow the URL, so arriving by a
   // drill-down link, removing a chip or pressing back all update the fields.
@@ -158,11 +161,12 @@ export default function Requests({ ctx }) {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
-          <button className="btn sm primary" type="submit" title="Search stored requests; the live stream pauses">
+          <button className="btn sm primary" type="submit"
+                  title="Apply the filters. The stream keeps running, filtered, unless a time range is set">
             Search
           </button>
           <button className="btn sm" type="button" onClick={() => setParams({})}
-                  title="Clear the search and go back to the live stream">
+                  title="Clear every filter and go back to the unfiltered live stream">
             Reset
           </button>
         </div>
@@ -225,7 +229,7 @@ export default function Requests({ ctx }) {
               <option value="only">Bots only</option>
             </select>
           </label>
-          <label>
+          <label className="f-time" title="Setting a time range searches stored requests instead of streaming">
             Time
             <select className="input" value="" onChange={since} aria-label="Quick time range">
               <option value="">Pick a period…</option>
@@ -234,25 +238,52 @@ export default function Requests({ ctx }) {
               ))}
             </select>
           </label>
-          <label>
+          <label className="f-time">
             From
             <input className="input" type="datetime-local" {...field('from')} />
           </label>
-          <label>
+          <label className="f-time">
             To
             <input className="input" type="datetime-local" {...field('to')} />
           </label>
         </div>
       </form>
 
+      {chips.length > 0 && (
+        <div className="filter-chips hstack" style={{ gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+          <span className="faint" style={{ fontSize: 11.5 }}>Filtering by</span>
+          {chips.map(([key, value]) => (
+            <button
+              key={key}
+              type="button"
+              className="chip info"
+              title={`Remove the ${FILTER_LABELS[key] ?? key} filter`}
+              onClick={() => removeFilter(key)}
+              style={{ maxWidth: 380 }}
+            >
+              <span className="faint">{FILTER_LABELS[key] ?? key}:</span>
+              <span className="truncate" style={{ display: 'inline-block', maxWidth: 260 }}>
+                {filterValueLabel(key, value)}
+              </span>
+              <span aria-hidden="true">×</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       {live ? (
-        <LiveStream />
+        // Keyed on the filters: a change starts a fresh stream and history.
+        <LiveStream key={paramString} filters={active} />
       ) : (
         <SearchResults
           active={active}
-          chips={chips}
-          onRemove={removeFilter}
-          onReset={() => setParams({})}
+          filtered={chips.length > 0}
+          onLive={() => {
+            const next = { ...active };
+            delete next.from;
+            delete next.to;
+            setParams(next);
+          }}
           retention={retention}
         />
       )}
@@ -260,11 +291,46 @@ export default function Requests({ ctx }) {
   );
 }
 
+
 // ---------------------------------------------------------------------------
-//  Live: the stream of new requests
+//  Fetching stored requests
 // ---------------------------------------------------------------------------
 
-function LiveStream() {
+/**
+ * Stored requests matching `filters`, newest first, from `before` (null =
+ * the newest). A search stops at a time budget on the server, so a rare match
+ * can need several round trips to find `want` of them; they are made without
+ * asking, up to AUTO_ROUNDS. `onPage` gets each page as it arrives, so the
+ * list fills in rather than waiting; `stillWanted` going false stops the
+ * search (a newer one started, or the page left).
+ * @returns the last response, whose nextCursor continues the search; or null
+ *   when it was abandoned
+ */
+async function findRequests(filters, { before = null, want = PAGE, count = false, stillWanted, onPage, onProgress }) {
+  const get = (b, limit, withCount) =>
+    api.get(`/api/requests${qs({ ...filters, limit, before: b, count: withCount ? 1 : undefined })}`);
+  let res = await get(before, want, count);
+  if (!stillWanted()) return null;
+  let found = res.rows?.length ?? 0;
+  onPage(res, true);
+  for (let round = 1; round < AUTO_ROUNDS; round++) {
+    const partway = res.windowed && !res.pageFull && res.nextCursor !== null;
+    if (!partway || found >= want) break;
+    onProgress?.(res.searchedBackTo);
+    res = await get(res.nextCursor, want - found, false);
+    if (!stillWanted()) return null;
+    found += res.rows?.length ?? 0;
+    onPage(res, false);
+  }
+  return res;
+}
+
+// ---------------------------------------------------------------------------
+//  Live: the stream of new requests, with the stored ones above
+// ---------------------------------------------------------------------------
+
+function LiveStream({ filters }) {
+  const filtered = Object.keys(filters).length > 0;
   const [rows, setRows] = useState([]);
   const [paused, setPaused] = useState(false);
   const [state, setState] = useState('connecting');
@@ -272,6 +338,10 @@ function LiveStream() {
   const [rate, setRate] = useState(0);
   const [skipped, setSkipped] = useState(0);
   const [seedError, setSeedError] = useState(null);
+  // Where the stored requests above the stream continue, and whether the
+  // last look stopped at its time budget rather than at the end of them.
+  const [older, setOlder] = useState({ cursor: null, partway: false, back: null });
+  const [loadingOlder, setLoadingOlder] = useState(false);
 
   // While paused, arriving requests collect here instead of re-rendering the
   // list, so the rows under the cursor never move.
@@ -281,10 +351,23 @@ function LiveStream() {
   const [pendingCount, setPendingCount] = useState(0);
   const viewRef = useRef(null);
   const rateWindow = useRef([]);
+  const alive = useRef(true);
+  // Following only while the newest row is in view: scrolled up to read, the
+  // view stays put as requests arrive.
+  const atBottom = useRef(true);
+  // Distance from the bottom to restore after older rows go in at the top.
+  const keepFromBottom = useRef(null);
+
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
 
   const appendRows = useCallback((incoming) => {
     setRows((prev) => {
-      // The seeded history and the stream can overlap (the hub's cursor is
+      // The stored history and the stream can overlap (the hub's cursor is
       // shared across tabs), and both are ascending by id — so dropping
       // anything not newer than the last row we hold prevents duplicate keys.
       const lastId = prev.length ? prev[prev.length - 1].id : 0;
@@ -295,32 +378,61 @@ function LiveStream() {
     });
   }, []);
 
-  // Seed with recent history so the view is never empty on arrival.
+  /** Stored requests older than the oldest shown, put in at the top. */
+  const prependOlder = useCallback((batch) => {
+    const el = viewRef.current;
+    if (el) keepFromBottom.current = el.scrollHeight - el.scrollTop;
+    setRows((prev) => {
+      const firstId = prev.length ? prev[0].id : Infinity;
+      return batch.filter((r) => r.id < firstId).reverse().concat(prev);
+    });
+  }, []);
+
+  // The latest stored requests, so the view is never empty on arrival.
   useEffect(() => {
-    let cancelled = false;
-    api
-      .get(`/api/requests${qs({ limit: 200 })}`)
+    const collected = [];
+    findRequests(filters, {
+      want: 200,
+      stillWanted: () => alive.current,
+      onPage: (res) => collected.push(...(res.rows ?? [])),
+    })
       .then((res) => {
-        if (cancelled) return;
-        const seed = (res?.rows ?? []).slice().reverse();
+        if (!res) return;
         // Anything the stream delivered meanwhile is newer: keep it after.
+        const seed = collected.slice().reverse();
         setRows((streamed) => {
           const lastSeed = seed.length ? seed[seed.length - 1].id : 0;
           return seed.concat(streamed.filter((r) => r.id > lastSeed));
         });
+        setOlder({ cursor: res.nextCursor ?? null, partway: Boolean(res.windowed && !res.pageFull), back: res.searchedBackTo });
         setSeedError(null);
       })
       .catch((err) => {
         // A browser-blocked request must not look like "no history yet".
-        if (!cancelled) setSeedError(err);
+        if (alive.current) setSeedError(err);
       });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  }, [filters]);
+
+  async function loadOlder() {
+    if (older.cursor === null || loadingOlder) return;
+    setLoadingOlder(true);
+    try {
+      const res = await findRequests(filters, {
+        before: older.cursor,
+        stillWanted: () => alive.current,
+        onPage: (page) => prependOlder(page.rows ?? []),
+      });
+      if (res) setOlder({ cursor: res.nextCursor ?? null, partway: Boolean(res.windowed && !res.pageFull), back: res.searchedBackTo });
+    } catch (err) {
+      if (alive.current) setSeedError(err);
+    } finally {
+      if (alive.current) setLoadingOlder(false);
+    }
+  }
 
   useEffect(() => {
-    const source = new EventSource('/api/stream');
+    // The server applies the filters (makeFilter in web/stream.js).
+    const source = new EventSource(`/api/stream${qs(filters)}`);
     setState('connecting');
 
     source.addEventListener('hello', () => setState('live'));
@@ -357,13 +469,29 @@ function LiveStream() {
     source.onerror = () => setState('reconnecting');
 
     return () => source.close();
-  }, [appendRows]);
+  }, [filters, appendRows]);
 
-  // Keep the newest request in view.
+  // Track whether the newest row is in view.
   useEffect(() => {
-    if (!follow || paused) return;
     const el = viewRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return undefined;
+    const onScroll = () => {
+      atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, []);
+
+  useLayoutEffect(() => {
+    const el = viewRef.current;
+    if (!el) return;
+    if (keepFromBottom.current !== null) {
+      // Older rows went in above: keep the same rows under the reader's eye.
+      el.scrollTop = el.scrollHeight - keepFromBottom.current;
+      keepFromBottom.current = null;
+    } else if (follow && !paused && atBottom.current) {
+      el.scrollTop = el.scrollHeight;
+    }
   }, [rows, follow, paused]);
 
   function resume() {
@@ -376,15 +504,31 @@ function LiveStream() {
   }
 
   const dot = state === 'live' && !paused ? 'pulsing' : paused ? 'paused' : state === 'live' ? '' : 'down';
+  const stateLabel = paused
+    ? 'Paused'
+    : state === 'live'
+      ? filtered ? 'Live, filtered' : 'Live'
+      : state === 'connecting' ? 'Connecting…' : 'Reconnecting…';
+
+  const olderBar = older.cursor !== null && (
+    <div style={{ padding: 8, textAlign: 'center' }}>
+      <button type="button" className="btn sm" onClick={loadOlder} disabled={loadingOlder}>
+        {loadingOlder ? 'Searching…' : older.partway ? 'Search older requests' : 'Load older requests'}
+      </button>
+      {older.partway && older.back && (
+        <span className="faint" style={{ fontSize: 11.5, marginLeft: 8 }}>
+          searched back to {relative(older.back)}
+        </span>
+      )}
+    </div>
+  );
 
   return (
     <div className="panel stream-panel">
       <div className="stream-bar">
         <div className="stream-controls">
           <span className={`live-dot ${dot}`} />
-          <span className="stream-state">
-            {paused ? 'Paused' : state === 'live' ? 'Live' : state === 'connecting' ? 'Connecting…' : 'Reconnecting…'}
-          </span>
+          <span className="stream-state">{stateLabel}</span>
           <button type="button" className="btn sm" onClick={() => (paused ? resume() : setPaused(true))}>
             {paused ? `▶ Resume${pendingCount ? ` (${num(pendingCount)})` : ''}` : '⏸ Pause'}
           </button>
@@ -397,8 +541,10 @@ function LiveStream() {
           </label>
         </div>
         <div className="stream-stats">
-          <Chip title="Requests per second across the whole server, averaged over 10s">
-            {rate.toFixed(rate < 10 ? 1 : 0)}/s
+          <Chip title={filtered
+            ? 'Matching requests per second, averaged over 10s'
+            : 'Requests per second across the whole server, averaged over 10s'}>
+            {rate.toFixed(rate < 10 ? 1 : 0)}/s{filtered ? ' matching' : ''}
           </Chip>
           {skipped > 0 && (
             <Chip tone="warn" title="The server logged requests faster than the live view can carry. They are all stored, and statistics are complete.">
@@ -412,7 +558,7 @@ function LiveStream() {
       {seedError && (
         <div style={{ padding: '0 12px' }}>
           <Banner level="warn">
-            Could not load recent requests: {String(seedError.message)}. If this says "Failed to
+            Could not load stored requests: {String(seedError.message)}. If this says "Failed to
             fetch" and the server log is empty, a browser extension or content blocker is
             dropping the request before it leaves the browser.
           </Banner>
@@ -422,7 +568,7 @@ function LiveStream() {
         <div style={{ padding: '0 12px' }}>
           <Banner level="warn">
             The stream dropped and is reconnecting. Requests that arrive meanwhile are still
-            stored — search for them, or reload.
+            stored — load them from above, or reload.
           </Banner>
         </div>
       )}
@@ -430,18 +576,21 @@ function LiveStream() {
       <RequestList
         rows={rows}
         viewRef={viewRef}
-        context={{}}
-        empty="Waiting for requests… Anything Caddy logs from now on appears here within about a second. Search above to look through stored requests."
+        before={olderBar}
+        context={{ host: filters.host ?? null }}
+        empty={filtered
+          ? 'No stored requests match these filters, and none have arrived since. Matching requests appear here within about a second.'
+          : 'Waiting for requests… Anything Caddy logs from now on appears here within about a second.'}
       />
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-//  Search: stored requests matching the filters
+//  Search: stored requests in a time range
 // ---------------------------------------------------------------------------
 
-function SearchResults({ active, chips, onRemove, onReset, retention }) {
+function SearchResults({ active, filtered, onLive, retention }) {
   const [rows, setRows] = useState([]);
   const [cursor, setCursor] = useState(null);
   const [paging, setPaging] = useState(null);
@@ -453,44 +602,30 @@ function SearchResults({ active, chips, onRemove, onReset, retention }) {
   const [error, setError] = useState(null);
   const reqId = useRef(0);
 
-  const page = useCallback(
-    (before, withCount) =>
-      api.get(`/api/requests${qs({ ...active, limit: PAGE, before, count: withCount ? 1 : undefined })}`),
-    [active]
-  );
-
-  /**
-   * Fetch from `before` (null = the newest) until a page of matches is found,
-   * the matching requests run out, or AUTO_ROUNDS round trips have been made,
-   * adding rows as they come in.
-   */
   const run = useCallback(
     async (before, replace) => {
       const mine = ++reqId.current;
       setError(null);
       if (replace) setLoading(true);
       try {
-        let res = await page(before, replace);
-        if (reqId.current !== mine) return;
-        let found = res.rows ?? [];
-        if (replace) {
-          setRows(found);
-          setTotal(res.total ?? null);
-          setRetained({ hours: res.retentionHours, from: res.retainedFrom });
-          setLoading(false);
-        } else {
-          setRows((prev) => prev.concat(found));
-        }
-        for (let round = 1; round < AUTO_ROUNDS; round++) {
-          const partway = res.windowed && !res.pageFull && res.nextCursor !== null;
-          if (!partway || found.length >= PAGE) break;
-          setSearching(res.searchedBackTo);
-          res = await page(res.nextCursor, false);
-          if (reqId.current !== mine) return;
-          found = found.concat(res.rows ?? []);
-          const more = res.rows ?? [];
-          setRows((prev) => prev.concat(more));
-        }
+        const res = await findRequests(active, {
+          before,
+          count: replace,
+          stillWanted: () => reqId.current === mine,
+          onProgress: (back) => setSearching(back),
+          onPage: (page, first) => {
+            if (first && replace) {
+              setRows(page.rows ?? []);
+              setTotal(page.total ?? null);
+              setRetained({ hours: page.retentionHours, maxDbSizeMb: page.maxDbSizeMb, from: page.retainedFrom });
+              setLoading(false);
+            } else {
+              const more = page.rows ?? [];
+              setRows((prev) => prev.concat(more));
+            }
+          },
+        });
+        if (!res) return;
         setCursor(res.nextCursor ?? null);
         setPaging({ windowed: res.windowed, pageFull: res.pageFull, searchedBackTo: res.searchedBackTo });
       } catch (err) {
@@ -502,7 +637,7 @@ function SearchResults({ active, chips, onRemove, onReset, retention }) {
         }
       }
     },
-    [page]
+    [active]
   );
 
   useEffect(() => {
@@ -518,33 +653,13 @@ function SearchResults({ active, chips, onRemove, onReset, retention }) {
   const host = active.host ?? null;
   // Stopped at its time budget rather than at the end of the matches.
   const searchedPartway = paging?.windowed && !paging?.pageFull && cursor !== null;
-  const hours = retained?.hours ?? retention?.rawHours ?? null;
-  const kept = keptFor(hours);
+  const kept = keptPhrase({
+    hours: retained ? retained.hours : retention?.rawHours,
+    maxDbSizeMb: retained ? retained.maxDbSizeMb : retention?.maxDbSizeMb,
+  });
 
   return (
     <>
-      {chips.length > 0 && (
-        <div className="hstack" style={{ gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
-          <span className="faint" style={{ fontSize: 11.5 }}>Filtering by</span>
-          {chips.map(([key, value]) => (
-            <button
-              key={key}
-              type="button"
-              className="chip info"
-              title={`Remove the ${FILTER_LABELS[key] ?? key} filter`}
-              onClick={() => onRemove(key)}
-              style={{ maxWidth: 380 }}
-            >
-              <span className="faint">{FILTER_LABELS[key] ?? key}:</span>
-              <span className="truncate" style={{ display: 'inline-block', maxWidth: 260 }}>
-                {filterValueLabel(key, value)}
-              </span>
-              <span aria-hidden="true">×</span>
-            </button>
-          ))}
-        </div>
-      )}
-
       {error && (
         <Banner level="error">
           Could not load requests
@@ -554,22 +669,18 @@ function SearchResults({ active, chips, onRemove, onReset, retention }) {
       )}
 
       <Banner level="info">
-        {kept ? (
-          <>Individual requests are kept for <strong>{kept}</strong></>
-        ) : (
-          <>Individual requests are kept until the database reaches its size limit</>
-        )}
+        Individual requests are kept {kept}
         {retained?.from ? <> — the oldest still stored is from {relative(retained.from)}</> : null}.
         Statistics reach much further back; use the <Link to="/domains">domain pages</Link> for
         historical analysis.
       </Banner>
 
       <Panel
-        title="Matching requests"
+        title="Requests in this period"
         flush
         actions={
           <div className="hstack" style={{ gap: 6, flexWrap: 'wrap' }}>
-            <span className="hstack" style={{ gap: 5, fontSize: 11.5 }} title="The live stream is paused while you search">
+            <span className="hstack" style={{ gap: 5, fontSize: 11.5 }} title="The live stream is paused while a time range is set">
               <span className="live-dot paused" />
               <span className="faint">Live paused</span>
             </span>
@@ -584,7 +695,8 @@ function SearchResults({ active, chips, onRemove, onReset, retention }) {
                 Domain overview
               </Link>
             )}
-            <button type="button" className="btn sm primary" onClick={onReset}>
+            <button type="button" className="btn sm primary" onClick={onLive}
+                    title={filtered ? 'Drop the time range and stream, keeping the other filters' : 'Stream new requests'}>
               ▶ Back to live
             </button>
           </div>
@@ -605,14 +717,10 @@ function SearchResults({ active, chips, onRemove, onReset, retention }) {
                   <>
                     No matches among requests back to{' '}
                     {paging.searchedBackTo ? relative(paging.searchedBackTo) : 'the searched range'}.
-                    Older requests have not been searched yet.
+                    Older requests in this period have not been searched yet.
                   </>
                 ) : (
-                  <>
-                    No requests match these filters
-                    {active.from || active.to ? ' in this period' : kept ? ` within the last ${kept}` : ''}.
-                    {chips.length > 0 && ' Try removing a filter, or go back to live.'}
-                  </>
+                  <>No stored requests match these filters in this period.</>
                 )
               }
             />

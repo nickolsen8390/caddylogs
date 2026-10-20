@@ -43,6 +43,20 @@ export function keptFor(hours) {
   return hours === 1 ? '1 hour' : `${hours} hours`;
 }
 
+/**
+ * How long stored requests are kept, to follow "Individual requests are
+ * kept": "for 2 days", "for 2 days, or less once the database reaches its
+ * 5 GB limit", "until the database reaches its 5 GB limit".
+ * @param {{hours?:number|null, maxDbSizeMb?:number|null}} r
+ */
+export function keptPhrase({ hours, maxDbSizeMb } = {}) {
+  const limit = maxDbSizeMb ? `${bytes(maxDbSizeMb * 1_048_576)} limit` : null;
+  const kept = keptFor(hours);
+  if (kept && limit) return `for ${kept}, or less once the database reaches its ${limit}`;
+  if (kept) return `for ${kept}`;
+  return limit ? `until the database reaches its ${limit}` : 'until the database reaches its size limit';
+}
+
 /** Time on site: "45s", "3m 05s", "1h 02m". */
 export function duration(msValue) {
   if (msValue === null || msValue === undefined) return '—';
@@ -66,6 +80,16 @@ export function relative(tsMs) {
   if (abs < 86_400_000) return `${Math.round(abs / 3_600_000)}h ${suffix}`;
   if (abs < 30 * 86_400_000) return `${Math.round(abs / 86_400_000)}d ${suffix}`;
   return new Date(tsMs).toLocaleDateString();
+}
+
+/**
+ * A request's time in a list: "14:03:22.123" today, "Oct 17 14:03:22" on an
+ * earlier day — scrolled back through days, a bare time is ambiguous.
+ */
+export function stamp(tsMs) {
+  const d = new Date(tsMs);
+  if (d.toDateString() === new Date().toDateString()) return clock(tsMs);
+  return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${d.toLocaleTimeString(undefined, { hour12: false })}`;
 }
 
 export const clock = (tsMs) =>

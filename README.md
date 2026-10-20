@@ -28,9 +28,10 @@ included compose file runs Caddy and the interface together.
   individual requests behind them, and source addresses get their own page with
   enrichment and behaviour.
 - **Requests** — the live log stream and the request search in one page. It
-  streams new requests as they arrive, with pause and per-request JSON
-  pretty-print; searching — by any field, free text, or a time range — pauses
-  the stream and lists the matches, and Reset goes back to live.
+  streams new requests as they arrive, with the latest stored ones above and
+  older ones a click away, pause, and per-request JSON pretty-print. Filters —
+  any field, or free text — apply to the stream too; a time range searches
+  the stored requests in that period instead, and Reset goes back to live.
 - **Health** — what the ingester is reading and whether IP enrichment is
   working.
 - **Settings** — how long individual requests are kept, and a size limit for

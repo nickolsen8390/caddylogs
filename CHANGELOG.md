@@ -4,6 +4,31 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org): a new major version (2.0.0) is the
 only kind that can require you to change anything when upgrading.
 
+## [1.3.1] — 2026-10-19
+
+### Changed
+
+- Requests: filters now apply to the live stream as well — domain, address,
+  status, method, free text, URL or agent contains, country, ASN, bots, page
+  views, channel and every other filter except a time range. Searching keeps
+  the stream running, filtered, with the latest matching stored requests
+  above it and a button to load older ones. Setting a time range still
+  switches to the stored requests in that period; "Back to live" drops the
+  time range and keeps the other filters, and Reset clears them all.
+- Requests: scrolled up to read, the live view stays put as requests arrive,
+  and follows again once scrolled back to the newest.
+- Requests from an earlier day show their date as well as their time.
+
+### Fixed
+
+- Settings: a size limit in whole gigabytes, such as 5, was refused by the
+  browser — only sizes like 0.25, 0.75 or 1.25 were accepted — so a limit
+  could not be saved, and retention stayed at its old value.
+- The note on how long requests are kept now mentions the size limit, when
+  one is set: "for 2 days, or less once the database reaches its 5 GB limit".
+- Phones: the request filter fields no longer run off the right of the
+  screen.
+
 ## [1.3.0] — 2026-10-18
 
 ### Added
@@ -256,6 +281,7 @@ First public release.
   filesystem, no Linux capabilities and `no-new-privileges`.
 - Works on phones: slide-in menu, readable request lists, folding filters.
 
+[1.3.1]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.3.1
 [1.3.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.3.0
 [1.2.3]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.2.3
 [1.2.2]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.2.2

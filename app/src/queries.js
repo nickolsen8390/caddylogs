@@ -434,10 +434,11 @@ export function dataRange() {
 
 const EVENT_COLUMNS = `id, ts, host, method, path, query, status, bytes_out, bytes_in,
   dur_ms, ip, ua, referer, referer_host, proto, tls_version, tls_cipher, browser,
-  os, device, bot, country, asn, as_org`;
+  os, device, bot, country, asn, as_org, nav, channel, lang, utm_source, utm_medium,
+  utm_campaign, utm_term, utm_content`;
 
 /** Latency bucket labels mapped back to the range that produced them. */
-const LATENCY_RANGES = {
+export const LATENCY_RANGES = {
   '0-1 ms': [0, 1], '1-5 ms': [1, 5], '5-10 ms': [5, 10], '10-25 ms': [10, 25],
   '25-50 ms': [25, 50], '50-100 ms': [50, 100], '100-250 ms': [100, 250],
   '250-500 ms': [250, 500], '0.5-1 s': [500, 1000], '1-2.5 s': [1000, 2500],
@@ -781,6 +782,7 @@ export function eventById(id) {
       reason: 'pruned',
       retainedFrom: oldestRetainedEvent(),
       retentionHours: retentionInfo().hours,
+      maxDbSizeMb: retentionInfo().maxDbSizeMb,
     };
   }
 
@@ -885,6 +887,7 @@ export function ipDetail(ip, fromMs, toMs, host = null) {
     methods: top(by.method),
     retainedFrom: oldestRetainedEvent(),
     retentionHours: retentionInfo().hours,
+    maxDbSizeMb: retentionInfo().maxDbSizeMb,
   };
 }
 

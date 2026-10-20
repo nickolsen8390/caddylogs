@@ -209,6 +209,7 @@ export async function registerApi(app) {
       // Requests are only retained for the raw window, so the UI can say
       // "nothing in the last N hours" instead of implying "never happened".
       retentionHours: retentionInfo().hours,
+      maxDbSizeMb: retentionInfo().maxDbSizeMb,
       // A count cannot stop early, so it is only taken when the query is
       // selective enough to be cheap. Broad searches report it as unknown
       // rather than blocking the server to find out.

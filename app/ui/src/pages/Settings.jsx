@@ -120,7 +120,7 @@ export default function Settings({ ctx }) {
               <input type="radio" name="mode" checked={form.mode === 'time'} disabled={!canEdit}
                      onChange={() => set({ mode: 'time' })} />
               Keep for
-              <input className="input" type="number" min="1" step="1" style={{ width: 90 }}
+              <input className="input" type="number" min="1" step="any" style={{ width: 90 }}
                      value={form.amount} disabled={!canEdit || form.mode !== 'time'}
                      onChange={(e) => set({ amount: e.target.value })} aria-label="Retention amount" />
               <select className="input" style={{ width: 'auto' }} value={form.unit}
@@ -149,7 +149,9 @@ export default function Settings({ ctx }) {
               <input type="checkbox" checked={form.limited} disabled={!canEdit}
                      onChange={(e) => set({ limited: e.target.checked })} />
               Limit the database to
-              <input className="input" type="number" min={data.limits.minDbSizeMb / GB} step="0.5"
+              {/* step="any": with min 0.25 and a step of 0.5, the browser only
+                  accepted 0.25, 0.75, 1.25… and refused 5. */}
+              <input className="input" type="number" min={data.limits.minDbSizeMb / GB} step="any"
                      style={{ width: 90 }} value={form.sizeGb} disabled={!canEdit || !form.limited}
                      onChange={(e) => set({ sizeGb: e.target.value })} aria-label="Size limit in GB" />
               GB

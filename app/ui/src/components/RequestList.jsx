@@ -7,7 +7,7 @@ import { Link } from 'react-router-dom';
 import { api, ApiError } from '../lib/api.js';
 import { JsonView } from './JsonView.jsx';
 import { Chip, Empty } from './ui.jsx';
-import { bytes, clock, keptFor, ms, statusClass } from '../lib/format.js';
+import { bytes, keptPhrase, ms, stamp, statusClass } from '../lib/format.js';
 import { countryName, flag } from '../lib/countries.js';
 import { drillTo } from '../lib/drill.js';
 
@@ -141,9 +141,7 @@ function ExpandedRequest({ row, context }) {
         <pre className="log-json faint">
           {`This request is no longer stored.\n\n`}
           {`Individual requests — and their raw log lines — are kept `}
-          {keptFor(problem?.body?.retentionHours)
-            ? `for ${keptFor(problem.body.retentionHours)}`
-            : 'until the database reaches its size limit'}
+          {keptPhrase({ hours: problem?.body?.retentionHours, maxDbSizeMb: problem?.body?.maxDbSizeMb })}
           {` (Settings page).\n`}
           {problem?.body?.retainedFrom
             ? `The oldest one still held is from ${new Date(problem.body.retainedFrom).toLocaleString()}.\n`
@@ -196,7 +194,7 @@ export function RequestRow({ row, expanded, onToggle, context }) {
         onClick={() => onToggle(row.id)}
         title="Click to expand the original log entry"
       >
-        <span className="faint col-time">{clock(row.ts)}</span>
+        <span className="faint col-time" title={new Date(row.ts).toLocaleString()}>{stamp(row.ts)}</span>
         <span className={`col-status ${statusClass(row.status)}`} style={{ fontWeight: 650 }}>
           {row.status || '—'}
         </span>
@@ -235,13 +233,16 @@ export function RequestRow({ row, expanded, onToggle, context }) {
  * @param {object} p
  * @param {object[]} p.rows
  * @param {object} [p.context] host/range carried into drill-down links
+ * @param {import('react').ReactNode} [p.before] shown above the rows, inside
+ *   the scrolling area (the live view's "load older" button)
  */
-export function RequestList({ rows, context, empty, viewRef, className = 'log-view' }) {
+export function RequestList({ rows, context, empty, viewRef, before, className = 'log-view' }) {
   const [expanded, setExpanded] = useState(null);
   const toggle = (id) => setExpanded((cur) => (cur === id ? null : id));
 
   return (
     <div className={className} ref={viewRef}>
+      {before}
       {!rows?.length ? (
         <Empty>{empty ?? 'No requests matched.'}</Empty>
       ) : (
