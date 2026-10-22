@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api, qs, ApiError } from '../lib/api.js';
-import { useApi, useHostOptions, useLocalState } from '../lib/useApi.js';
+import { useApi, useHostOptions } from '../lib/useApi.js';
 import { Banner, Chip, Loading, Panel } from '../components/ui.jsx';
 import { RequestList } from '../components/RequestList.jsx';
 import { FILTER_KEYS, FILTER_LABELS, filterValueLabel } from '../lib/drill.js';
@@ -334,7 +334,6 @@ function LiveStream({ filters }) {
   const [rows, setRows] = useState([]);
   const [paused, setPaused] = useState(false);
   const [state, setState] = useState('connecting');
-  const [follow, setFollow] = useLocalState('cli.logs.follow', true);
   const [rate, setRate] = useState(0);
   const [skipped, setSkipped] = useState(0);
   const [seedError, setSeedError] = useState(null);
@@ -501,17 +500,17 @@ function LiveStream({ filters }) {
     if (!el) return;
     if (jumpToNewest.current) {
       // The stored history has just gone in above whatever the stream had
-      // delivered: open at the newest, whatever Follow says.
+      // delivered: open at the newest.
       jumpToNewest.current = false;
       toNewest();
     } else if (keepFromBottom.current !== null) {
       // Older rows went in above: keep the same rows under the reader's eye.
       el.scrollTop = el.scrollHeight - keepFromBottom.current;
       keepFromBottom.current = null;
-    } else if (follow && !paused && atBottom.current) {
+    } else if (!paused && atBottom.current) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [rows, follow, paused]);
+  }, [rows, paused]);
 
   function resume() {
     if (pausedBuffer.current.length) {
@@ -554,10 +553,6 @@ function LiveStream({ filters }) {
           <button type="button" className="btn sm" onClick={() => setRows([])}>
             Clear
           </button>
-          <label className="hstack" style={{ gap: 5, fontSize: 12 }}>
-            <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
-            Follow
-          </label>
           {scrolledUp && (
             <button type="button" className="btn sm primary" onClick={toNewest} title="Scroll to the newest request">
               ↓ Latest
