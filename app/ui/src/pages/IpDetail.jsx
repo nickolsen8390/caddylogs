@@ -214,6 +214,11 @@ export default function IpDetail({ ctx }) {
             empty={`No requests from this address ${keptFor(data.retentionHours) ? `in the last ${keptFor(data.retentionHours)}` : "among stored requests"}.`}
           />
         )}
+        <div style={{ padding: 12, textAlign: 'center' }}>
+          <Link className="btn sm" to={`/requests${qs({ ip, host })}`}>
+            All requests from {ip} →
+          </Link>
+        </div>
       </Panel>
     </>
   );

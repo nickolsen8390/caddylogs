@@ -9,6 +9,7 @@ import Traffic from './pages/Traffic.jsx';
 import Domains from './pages/Domains.jsx';
 import DomainDetail from './pages/DomainDetail.jsx';
 import Settings from './pages/Settings.jsx';
+import Clients from './pages/Clients.jsx';
 import Requests from './pages/Requests.jsx';
 import IpDetail from './pages/IpDetail.jsx';
 import Health from './pages/Health.jsx';
@@ -25,6 +26,7 @@ const TITLES = [
   [/^\/domains$/, 'Domains'],
   [/^\/domains\//, 'Domain detail'],
   [/^\/requests/, 'Requests'],
+  [/^\/clients/, 'Clients'],
   [/^\/ip\//, 'Source address'],
   [/^\/settings/, 'Settings'],
   [/^\/health/, 'System health'],
@@ -166,6 +168,9 @@ export default function App() {
           <NavLink to="/domains">
             <Icon name="domains" /> Domains
           </NavLink>
+          <NavLink to="/clients">
+            <Icon name="clients" /> Clients
+          </NavLink>
           <NavLink to="/requests">
             <Icon name="stream" /> Requests
           </NavLink>
@@ -230,6 +235,7 @@ export default function App() {
             <Route path="/" element={<Dashboard ctx={ctx} />} />
             <Route path="/traffic" element={<Traffic ctx={ctx} />} />
             <Route path="/domains" element={<Domains ctx={ctx} />} />
+            <Route path="/clients" element={<Clients ctx={ctx} />} />
             <Route path="/domains/:host" element={<DomainDetail ctx={ctx} />} />
             <Route path="/requests" element={<Requests ctx={ctx} />} />
             <Route path="/ip/:ip" element={<IpDetail ctx={ctx} />} />

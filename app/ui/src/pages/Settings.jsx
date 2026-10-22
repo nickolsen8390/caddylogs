@@ -35,7 +35,15 @@ function settingsOf(f) {
 }
 
 export default function Settings({ ctx }) {
-  const { data, error, reload } = useApi('/api/settings', { onUnauthorized: ctx?.onUnauthorized });
+  // Polled only while a restore from log files is under way.
+  const [polling, setPolling] = useState(false);
+  const { data, error, reload } = useApi('/api/settings', {
+    onUnauthorized: ctx?.onUnauthorized,
+    refreshMs: polling ? 3000 : 0,
+  });
+  useEffect(() => {
+    setPolling(['queued', 'running'].includes(data?.restore?.state));
+  }, [data]);
   const [form, setForm] = useState(null);
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState(null);
@@ -174,6 +182,10 @@ export default function Settings({ ctx }) {
         </Panel>
       </div>
 
+      <div style={{ marginBottom: 14 }}>
+        <RestorePanel data={data} canEdit={canEdit} unsaved={changed} onStarted={reload} />
+      </div>
+
       {result?.ok === false && !Object.keys(problems).length && (
         <Banner level="error">Could not save: {result.message}</Banner>
       )}
@@ -206,5 +218,67 @@ export default function Settings({ ctx }) {
         )}
       </div>
     </form>
+  );
+}
+
+/**
+ * Putting back stored requests that an earlier, shorter retention deleted,
+ * from the log files still on disk (src/ingest/restore.js).
+ */
+function RestorePanel({ data, canEdit, unsaved, onStarted }) {
+  const [starting, setStarting] = useState(false);
+  const [problem, setProblem] = useState(null);
+  const s = data.restore;
+  const busy = s?.state === 'queued' || s?.state === 'running';
+
+  async function start() {
+    setStarting(true);
+    setProblem(null);
+    try {
+      await api.post('/api/settings/restore', {});
+      onStarted();
+    } catch (err) {
+      setProblem(err instanceof ApiError && err.status === 409 ? 'A restore is already running.' : String(err.message));
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  return (
+    <Panel title="Restore stored requests from log files">
+      <p className="dim" style={{ marginTop: 0, fontSize: 12.5 }}>
+        Requests deleted under an earlier, shorter retention may still be in Caddy's log files
+        {data.logDir ? <> (<code>{data.logDir}</code> in the container)</> : null}. This reads them
+        again and puts back the requests older than the oldest one stored — as far back as the
+        retention above allows, and stopping short of the size limit. Their statistics were counted
+        when they first arrived, so nothing is counted twice. It runs in the background; the
+        interface stays usable.
+      </p>
+      {s && (
+        <p style={{ fontSize: 12.5 }}>
+          {s.state === 'queued' && 'Starting…'}
+          {s.state === 'running' &&
+            `Restoring… ${num(s.filesDone)} of ${num(s.files)} files read, ${num(s.restored)} requests put back so far.`}
+          {s.state === 'done' && (
+            <>
+              Last restore {relative(s.finished)}: {num(s.restored)} requests put back from{' '}
+              {num(s.filesDone)} log files
+              {s.oldest ? <>, reaching back to {dateTime(s.oldest)}</> : null}
+              {s.message ? <> — {s.message}</> : null}.
+            </>
+          )}
+          {s.state === 'failed' && <span style={{ color: 'var(--red)' }}>Last restore failed: {s.message}</span>}
+        </p>
+      )}
+      {problem && <Banner level="error">{problem}</Banner>}
+      {canEdit && (
+        <div className="hstack" style={{ gap: 8 }}>
+          <button type="button" className="btn sm" onClick={start} disabled={busy || starting || unsaved}>
+            {busy ? 'Restoring…' : 'Restore from log files'}
+          </button>
+          {unsaved && <span className="faint" style={{ fontSize: 11.5 }}>Save the retention first.</span>}
+        </div>
+      )}
+    </Panel>
   );
 }

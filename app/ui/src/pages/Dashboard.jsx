@@ -53,7 +53,7 @@ export default function Dashboard({ ctx }) {
         <>
           {/* ---------------------------------------------------- headline */}
           <div className="grid stats" style={{ marginBottom: 14 }}>
-            <Stat label="Requests" value={compact(t.requests)} current={t.requests} previous={p?.requests}
+            <Stat label="Requests" to="/requests" value={compact(t.requests)} current={t.requests} previous={p?.requests}
                   sub={`${num(t.requests)} total`} />
             <Stat label="Success rate" value={pct(t.success_rate)} current={t.success_rate}
                   previous={p?.success_rate} sub={`${compact(t.c2xx + t.c3xx)} 2xx/3xx`}
@@ -63,13 +63,13 @@ export default function Dashboard({ ctx }) {
                   sub={`${pct(t.error_rate)} of traffic`} tone={t.c5xx > 0 ? 'red' : undefined} />
             <Stat label="Server errors" value={compact(t.c5xx)} current={t.c5xx} previous={p?.c5xx}
                   inverted sub="5xx responses" tone={t.c5xx > 0 ? 'red' : 'green'} />
-            <Stat label="Unique clients" value={compact(t.unique_ips)} current={t.unique_ips}
+            <Stat label="Unique clients" to="/clients" value={compact(t.unique_ips)} current={t.unique_ips}
                   previous={p?.unique_ips} sub="distinct source IPs" />
             <Stat label="Bandwidth out" value={bytes(t.bytes_out)} current={t.bytes_out}
                   previous={p?.bytes_out} sub={`${bytes(t.bytes_in)} in`} />
             <Stat label="Mean response" value={ms(t.avg_ms)} current={t.avg_ms} previous={p?.avg_ms}
                   inverted sub={`p95 ${ms(data.latency?.p95)}`} />
-            <Stat label="Domains served" value={num(t.hosts)} sub="with traffic in range" />
+            <Stat label="Domains served" to="/domains" value={num(t.hosts)} sub="with traffic in range" />
             <Stat label="Bot traffic" value={pct(t.requests ? t.bots / t.requests : 0)}
                   sub={`${compact(t.bots)} requests`} />
           </div>
@@ -101,7 +101,8 @@ export default function Dashboard({ ctx }) {
             <Panel title="Top requested URLs" flush>
               <TopList rows={data.topPaths} dim="path" context={{ range }} />
             </Panel>
-            <Panel title="Top talkers" flush>
+            <Panel title="Top talkers" flush
+                   actions={<Link className="btn sm" to="/clients">All clients</Link>}>
               <TopList
                 rows={data.topIps}
                 dim="ip"

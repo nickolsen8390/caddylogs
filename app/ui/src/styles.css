@@ -161,6 +161,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 /* stat cards */
 .stat { padding: 12px 14px; display: flex; flex-direction: column; gap: 3px; }
+/* A stat card that opens the page behind its number. */
+.stat-link { color: inherit; text-decoration: none; cursor: pointer; }
+.stat-link:hover { border-color: var(--accent); text-decoration: none; }
+.stat-link:hover .stat-label::after { content: ' →'; }
 .stat-label {
   font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em;
   text-transform: uppercase; color: var(--text-faint);
@@ -708,6 +712,11 @@ body.nav-locked { overflow: hidden; }
 .requests-live { display: flex; flex-direction: column; height: calc(100vh - 132px); height: calc(100dvh - 132px); }
 .requests-live > .filter-bar, .requests-live > .filter-chips { flex: none; }
 .requests-live > .stream-panel { flex: 1; min-height: 240px; height: auto; }
+/* The page places the scroll position itself — at the newest request, or
+   where it was when older rows go in above. The browser's scroll anchoring
+   would otherwise pin the first rows shown when the history arrives above
+   them, and the view opened on the oldest of the loaded requests. */
+.stream-panel .log-view { overflow-anchor: none; }
 .stream-controls, .stream-filters, .stream-stats, .stream-filter-actions { display: contents; }
 .stream-state { font-weight: 620; min-width: 92px; }
 .stream-filters .f-host { width: 150px; }

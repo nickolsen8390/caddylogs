@@ -408,6 +408,93 @@ export function domains(fromMs, toMs, { sort = 'requests', search = null } = {})
     .all(params);
 }
 
+// ---------------------------------------------------------------------------
+//  Clients — source addresses, from the `ip` dimension
+// ---------------------------------------------------------------------------
+
+/** Sort keys the clients list accepts, so `sort` can never reach SQL raw. */
+const CLIENT_SORTS = {
+  requests: 'a.requests',
+  bytes: 'a.bytes',
+  errors: 'a.errors',
+  error_rate: 'CAST(a.errors AS REAL) / a.requests',
+  avg_ms: 'a.avg_ms',
+  first_seen: 'a.first_b',
+  last_seen: 'a.last_b',
+  ip: 'a.ip',
+  country: "COALESCE(i.country, '')",
+  network: "COALESCE(i.as_org, i.as_name, '')",
+};
+
+/**
+ * Every source address with traffic in the period, with its counters and
+ * what enrichment knows of it, sorted and paged on the server — a busy site
+ * has tens of thousands. Bytes are those sent to the address; the statistics
+ * do not record bytes received per address, or which of its requests were
+ * bots. First and last seen are to the hour (to the day for days already
+ * folded). Addresses that compaction folded into "(other)" are not listed;
+ * `folded` counts their requests.
+ */
+export function clients(fromMs, toMs, {
+  host = null, sort = 'requests', dir = 'desc', search = null, limit = 100, offset = 0,
+} = {}) {
+  const db = getDb();
+  const order = CLIENT_SORTS[sort] ?? CLIENT_SORTS.requests;
+  const direction = dir === 'asc' ? 'ASC' : 'DESC';
+  const like = likePattern(search);
+  const params = scope(fromMs, toMs, host);
+  const matching = like
+    ? `WHERE a.ip LIKE @like ESCAPE '\\' OR i.as_org LIKE @like ESCAPE '\\'
+          OR i.as_name LIKE @like ESCAPE '\\' OR i.country = @cc
+          OR CAST(i.asn AS TEXT) = @asn`
+    : '';
+  if (like) {
+    params.like = like;
+    params.cc = String(search).trim().toUpperCase();
+    params.asn = String(search).trim().replace(/^as/i, '');
+  }
+  const aggregated = `
+    WITH a AS (
+      SELECT value AS ip, SUM(requests) AS requests, SUM(bytes) AS bytes, SUM(errors) AS errors,
+             CASE WHEN SUM(requests) > 0 THEN SUM(dur_sum) / SUM(requests) ELSE 0 END AS avg_ms,
+             MIN(bucket) AS first_b, MAX(bucket) AS last_b
+        FROM dims
+       WHERE gran IN ('h', 'd') AND dim = 'ip' AND bucket >= @from AND bucket < @to
+             AND value <> '(other)' ${hostClause(host)}
+       GROUP BY value)`;
+
+  const rows = db
+    .prepare(
+      `${aggregated}
+       SELECT a.ip, a.requests, a.bytes, a.errors, a.avg_ms,
+              a.first_b * 1000 AS first_seen, a.last_b * 1000 AS last_seen,
+              i.country, i.country_name, i.asn, i.as_org, i.as_name
+         FROM a LEFT JOIN ip_info i ON i.ip = a.ip
+         ${matching}
+        ORDER BY ${order} ${direction}, a.requests DESC, a.ip
+        LIMIT @limit OFFSET @offset`
+    )
+    .all({ ...params, limit: Math.min(1000, Math.max(1, limit)), offset: Math.max(0, offset) });
+
+  const counted = db
+    .prepare(
+      `${aggregated}
+       SELECT COUNT(*) AS n, COALESCE(SUM(a.requests), 0) AS requests
+         FROM a LEFT JOIN ip_info i ON i.ip = a.ip ${matching}`
+    )
+    .get(params);
+  const all = db
+    .prepare(
+      `SELECT COALESCE(SUM(requests), 0) AS requests,
+              COALESCE(SUM(CASE WHEN value = '(other)' THEN requests ELSE 0 END), 0) AS folded
+         FROM dims
+        WHERE gran IN ('h', 'd') AND dim = 'ip' AND bucket >= @from AND bucket < @to ${hostClause(host)}`
+    )
+    .get(scope(fromMs, toMs, host));
+
+  return { rows, matching: counted.n, totalRequests: all.requests, folded: all.folded };
+}
+
 export function hostExists(host) {
   return !!getDb().prepare('SELECT 1 FROM hosts WHERE host = ?').get(host);
 }
@@ -771,7 +858,8 @@ export function maxEventId() {
  */
 export function eventById(id) {
   const n = Number(id);
-  if (!Number.isInteger(n) || n <= 0) return { found: false, reason: 'bad_id' };
+  // Requests restored from log files can have ids at or below zero (restore.js).
+  if (!Number.isInteger(n)) return { found: false, reason: 'bad_id' };
 
   const db = getDb();
   const event = db.prepare('SELECT * FROM events WHERE id = ?').get(n);

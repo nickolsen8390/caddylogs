@@ -355,8 +355,12 @@ function LiveStream({ filters }) {
   // Following only while the newest row is in view: scrolled up to read, the
   // view stays put as requests arrive.
   const atBottom = useRef(true);
+  // The same, for rendering the "latest" button.
+  const [scrolledUp, setScrolledUp] = useState(false);
   // Distance from the bottom to restore after older rows go in at the top.
   const keepFromBottom = useRef(null);
+  // Set when the stored history arrives: open at the newest request.
+  const jumpToNewest = useRef(false);
 
   useEffect(() => {
     alive.current = true;
@@ -400,6 +404,7 @@ function LiveStream({ filters }) {
         if (!res) return;
         // Anything the stream delivered meanwhile is newer: keep it after.
         const seed = collected.slice().reverse();
+        jumpToNewest.current = true;
         setRows((streamed) => {
           const lastSeed = seed.length ? seed[seed.length - 1].id : 0;
           return seed.concat(streamed.filter((r) => r.id > lastSeed));
@@ -477,15 +482,29 @@ function LiveStream({ filters }) {
     if (!el) return undefined;
     const onScroll = () => {
       atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+      setScrolledUp(!atBottom.current);
     };
     el.addEventListener('scroll', onScroll, { passive: true });
     return () => el.removeEventListener('scroll', onScroll);
   }, []);
 
+  function toNewest() {
+    const el = viewRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    atBottom.current = true;
+    setScrolledUp(false);
+  }
+
   useLayoutEffect(() => {
     const el = viewRef.current;
     if (!el) return;
-    if (keepFromBottom.current !== null) {
+    if (jumpToNewest.current) {
+      // The stored history has just gone in above whatever the stream had
+      // delivered: open at the newest, whatever Follow says.
+      jumpToNewest.current = false;
+      toNewest();
+    } else if (keepFromBottom.current !== null) {
       // Older rows went in above: keep the same rows under the reader's eye.
       el.scrollTop = el.scrollHeight - keepFromBottom.current;
       keepFromBottom.current = null;
@@ -539,6 +558,11 @@ function LiveStream({ filters }) {
             <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
             Follow
           </label>
+          {scrolledUp && (
+            <button type="button" className="btn sm primary" onClick={toNewest} title="Scroll to the newest request">
+              ↓ Latest
+            </button>
+          )}
         </div>
         <div className="stream-stats">
           <Chip title={filtered

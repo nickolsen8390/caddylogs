@@ -11,6 +11,7 @@ import { startRollupLoop, stopRollupLoop } from './rollup.js';
 import { initMaxmind } from '../enrich/maxmind.js';
 import { resolveMany, startEnrichWorker, stopEnrichWorker } from '../enrich/index.js';
 import { startMaintenance, stopMaintenance } from '../maintenance.js';
+import { startRestoreWatcher, stopRestoreWatcher } from './restore.js';
 
 const log = logger('ingest');
 
@@ -127,6 +128,7 @@ export class Ingestor {
     startEnrichWorker();
     startRollupLoop();
     startMaintenance();
+    startRestoreWatcher();
 
     this.tailer = new Tailer({
       dir: config.logDir,
@@ -147,6 +149,7 @@ export class Ingestor {
     stopRollupLoop();
     stopEnrichWorker();
     stopMaintenance();
+    stopRestoreWatcher();
     await this.flush();
   }
 }

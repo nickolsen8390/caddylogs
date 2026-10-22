@@ -4,6 +4,41 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org): a new major version (2.0.0) is the
 only kind that can require you to change anything when upgrading.
 
+## [1.4.0] — 2026-10-22
+
+### Security
+
+- Built on Node.js 22.23.4, from the Node.js security release of 21 October
+  2026, which fixes ten vulnerabilities. Among them are CVE-2026-111497, remote
+  code execution through the bundled Brotli decoder, and TLS certificate
+  hostname bypasses. The interface decompresses data it receives over the
+  network — its notoolkit lookups — and checks that server's certificate, so
+  update.
+- The Node.js base image is now pinned to an exact release, so a build
+  always contains the fixes it is meant to, rather than whatever a moving
+  tag or a build cache last held.
+
+### Added
+
+- A **Clients** page: every source address with traffic in the period, like
+  the Domains page lists hosts — requests, share, bytes sent, errors, error
+  rate, response time, country, network, and first and last seen — sortable
+  by any of them, searchable by address, network, ASN or country, and for all
+  domains or one. The dashboard's "Unique clients" card opens it, as do a
+  domain's; "Requests" and "Domains served" open their pages too.
+- Settings: **Restore from log files**. After raising the retention,
+  requests deleted under the old one can be put back from the Caddy log
+  files still on disk — as far back as the new retention allows, and short
+  of the size limit — in the background. Statistics are not counted twice.
+- An address's page has an "All requests from this address" button below
+  its recent requests.
+
+### Fixed
+
+- Requests: the live view opens at the newest request instead of the oldest
+  of the history loaded above it, and a "↓ Latest" button appears when
+  scrolled up.
+
 ## [1.3.1] — 2026-10-19
 
 ### Changed
@@ -281,6 +316,7 @@ First public release.
   filesystem, no Linux capabilities and `no-new-privileges`.
 - Works on phones: slide-in menu, readable request lists, folding filters.
 
+[1.4.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.4.0
 [1.3.1]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.3.1
 [1.3.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.3.0
 [1.2.3]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.2.3

@@ -23,6 +23,9 @@ included compose file runs Caddy and the interface together.
 - **Domains** — every host that received a request Caddy actually served, with
   counters; click through for user agents, source countries and ASNs, a world
   heatmap, protocol/TLS breakdown, slowest and most error-prone URLs.
+- **Clients** — every source address with traffic in the period, sortable by
+  requests, share, bytes sent, errors, response time, country, network and
+  first or last seen, for all domains or one.
 - **Drill-down** — every value in the app is clickable. A source IP, user
   agent, URL, country, ASN, TLS cipher or latency bucket all resolve to the
   individual requests behind them, and source addresses get their own page with
@@ -403,7 +406,18 @@ is empty):
   file settles at about the limit.
 
 Changes apply within about ten minutes, with no restart. `.env` gives the
-starting values (`RAW_RETENTION_HOURS`, `MAX_DB_SIZE`).
+starting values (`RAW_RETENTION_HOURS`, `MAX_DB_SIZE`) — set them before the
+first start if you want more history from the start, as the first start
+reads the existing log files from the beginning.
+
+**Restoring after raising the retention.** Requests deleted under a shorter
+retention are usually still in Caddy's log files. "Restore from log files" on
+the Settings page reads them again and puts back the requests older than the
+oldest one stored, as far back as the new retention allows and stopping short
+of the size limit. It runs in the background. Their statistics were counted
+when they first arrived, so nothing is counted twice; only files matching
+`CADDY_LOG_GLOB` that are still on disk can be read (compressed, rotated
+files are not).
 
 A large database is a slower one: searching requests and the address pages
 read more data as it grows, and once the database is much larger than the

@@ -21,11 +21,13 @@ export function Panel({ title, actions, children, flush = false, className = '',
  * @param {object} p
  * @param {boolean} [p.inverted] true when an increase is bad (errors, latency)
  */
-export function Stat({ label, value, sub, previous, current, inverted = false, tone }) {
+export function Stat({ label, value, sub, previous, current, inverted = false, tone, to }) {
   const d = previous === undefined ? null : pctDelta(current, previous);
   const dir = d === null ? 'flat' : d > 0.001 ? 'up' : d < -0.001 ? 'down' : 'flat';
+  // With `to`, the whole card is a link to the page behind the number.
+  const Box = to ? Link : 'div';
   return (
-    <div className="panel stat">
+    <Box className={`panel stat${to ? ' stat-link' : ''}`} {...(to ? { to } : {})}>
       <span className="stat-label">{label}</span>
       <span className="stat-value" style={tone ? { color: `var(--${tone})` } : undefined}>
         {value}
@@ -38,7 +40,7 @@ export function Stat({ label, value, sub, previous, current, inverted = false, t
         )}
         {sub && <span className="dim">{sub}</span>}
       </span>
-    </div>
+    </Box>
   );
 }
 
@@ -197,6 +199,7 @@ export function Icon({ name }) {
     dashboard: 'M3 3h7v7H3V3zm11 0h7v4h-7V3zM3 14h7v7H3v-7zm11-3h7v10h-7V11z',
     traffic: 'M3 20h18M6 16v-4M11 16V8M16 16v-6M21 16V5',
     domains: 'M12 2a10 10 0 100 20 10 10 0 000-20zm0 0c3 3 3 17 0 20M2.5 9h19M2.5 15h19',
+    clients: 'M4 5h16v10H4zM9 19h6M12 15v4',
     requests: 'M10 4h11M10 12h11M10 20h11M4 4h.01M4 12h.01M4 20h.01',
     stream: 'M4 6h16M4 12h10M4 18h13',
     health: 'M3 12h4l2 6 4-14 2 8h6',

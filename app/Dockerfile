@@ -9,9 +9,14 @@
 # page, can be copied in; .dockerignore there limits what is sent.
 #
 # Lockfiles (package-lock.json) are used when present, for reproducible builds.
+#
+# The Node.js base image is pinned to an exact release, so a security fix in
+# Node itself is guaranteed to be in a build rather than depending on what a
+# floating tag pointed at. Dependabot proposes newer releases on the same
+# major line (.github/dependabot.yml).
 
 # ---------- stage 1: build the React UI ----------
-FROM node:22-bookworm-slim AS ui
+FROM node:22.23.4-bookworm-slim AS ui
 WORKDIR /ui
 COPY app/ui/package*.json ./
 RUN if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; \
@@ -20,7 +25,7 @@ COPY app/ui/ ./
 RUN npm run build
 
 # ---------- stage 2: build native server deps ----------
-FROM node:22-bookworm-slim AS deps
+FROM node:22.23.4-bookworm-slim AS deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 make g++ ca-certificates \
  && rm -rf /var/lib/apt/lists/*
@@ -30,7 +35,7 @@ RUN if [ -f package-lock.json ]; then npm ci --omit=dev --no-audit --no-fund; \
     else npm install --omit=dev --no-audit --no-fund; fi
 
 # ---------- stage 3: runtime ----------
-FROM node:22-bookworm-slim AS runtime
+FROM node:22.23.4-bookworm-slim AS runtime
 
 ARG VERSION=dev
 ARG REVISION=unknown

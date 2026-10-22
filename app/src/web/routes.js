@@ -8,6 +8,7 @@ import { releaseInfo } from '../release.js';
 import { hub, makeFilter } from './stream.js';
 import { logger } from '../util/log.js';
 import { usedBytes, fileBytes } from '../db.js';
+import { requestRestore, restoreStatus } from '../ingest/restore.js';
 import {
   getSettings, defaultSettings, saveSettings, settingsHistory, retentionInfo, MIN_DB_SIZE_MB,
 } from '../settings.js';
@@ -157,6 +158,23 @@ export async function registerApi(app) {
     return {
       window: { from, to },
       rows: Q.domains(from, to, { sort: req.query.sort, search: req.query.search }),
+    };
+  });
+
+  // --- clients -------------------------------------------------------------
+
+  app.get('/api/clients', rl, async (req) => {
+    const { from, to } = windowOf(req.query);
+    return {
+      window: { from, to },
+      ...Q.clients(from, to, {
+        host: req.query.host || null,
+        sort: req.query.sort,
+        dir: req.query.dir,
+        search: req.query.search,
+        limit: intParam(req.query.limit, 100),
+        offset: intParam(req.query.offset, 0, 10_000_000),
+      }),
     };
   });
 
@@ -332,6 +350,8 @@ export async function registerApi(app) {
       history: settingsHistory(),
       canEdit: canConfigure(req),
       limits: { minDbSizeMb: MIN_DB_SIZE_MB },
+      restore: restoreStatus(),
+      logDir: config.logDir,
       usage: {
         usedBytes: used,
         fileBytes: fileBytes(),
@@ -345,6 +365,16 @@ export async function registerApi(app) {
         bytesPerRequest: events ? Math.round(used / events) : null,
       },
     };
+  });
+
+  // Put back stored requests from the log files still on disk (restore.js);
+  // the ingest process does the work and reports progress through
+  // restore_status, returned with /api/settings.
+  app.post('/api/settings/restore', rl, async (req, reply) => {
+    if (!canConfigure(req)) return reply.code(403).send({ error: 'forbidden' });
+    if (!requestRestore(req.session?.username)) return reply.code(409).send({ error: 'already_running' });
+    log.info('restore from log files requested', { username: req.session?.username });
+    return { status: restoreStatus() };
   });
 
   app.post('/api/settings', rl, async (req, reply) => {

@@ -70,13 +70,13 @@ export default function DomainDetail({ ctx }) {
       </div>
 
       <div className="grid stats" style={{ marginBottom: 14 }}>
-        <Stat label="Requests" value={compact(t.requests)} current={t.requests} previous={p?.requests}
+        <Stat label="Requests" to={`/requests?host=${encodeURIComponent(host)}`} value={compact(t.requests)} current={t.requests} previous={p?.requests}
               sub={num(t.requests)} />
         <Stat label="Success rate" value={pct(t.success_rate)} current={t.success_rate}
               previous={p?.success_rate}
               tone={t.success_rate > 0.95 ? 'green' : t.success_rate > 0.85 ? 'amber' : 'red'}
               sub={`${compact(t.c4xx + t.c5xx)} failed`} />
-        <Stat label="Unique clients" value={compact(t.unique_ips)} current={t.unique_ips}
+        <Stat label="Unique clients" to={`/clients?host=${encodeURIComponent(host)}`} value={compact(t.unique_ips)} current={t.unique_ips}
               previous={p?.unique_ips} sub="distinct source IPs" />
         <Stat label="Sent" value={bytes(t.bytes_out)} current={t.bytes_out} previous={p?.bytes_out}
               sub={`${bytes(t.bytes_in)} received`} />

@@ -34,6 +34,16 @@ function globToRegExp(glob) {
   return new RegExp(out + '$');
 }
 
+/** Whether a file name matches CADDY_LOG_GLOB (comma-separated globs). */
+export function globMatcher(glob) {
+  const patterns = String(glob)
+    .split(',')
+    .map((g) => g.trim())
+    .filter(Boolean)
+    .map(globToRegExp);
+  return (name) => patterns.some((re) => re.test(name));
+}
+
 export class Tailer {
   /**
    * @param {object} opts
