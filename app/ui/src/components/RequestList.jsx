@@ -212,7 +212,7 @@ export function RequestRow({ row, expanded, onToggle, context }) {
           className="truncate col-ip"
           title={`${row.ip ?? ''}${row.as_org ? ` · ${row.as_org}` : ''}`}
         >
-          {row.country ? `${flag(row.country)} ` : ''}
+          {row.country ? `${flag(row.country) || row.country} ` : ''}
           {row.ip ? (
             // Straight to the address's own page; stopPropagation so the click
             // navigates instead of also toggling the row open.

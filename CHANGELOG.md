@@ -4,6 +4,15 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org): a new major version (2.0.0) is the
 only kind that can require you to change anything when upgrading.
 
+## [1.4.2] — 2026-10-22
+
+### Fixed
+
+- Countries showed as "us US" on Windows: Windows has no flag emoji, so
+  Chrome and Edge there draw a flag's two letters instead. Flags are now
+  left out where the browser cannot draw them, and the country code or name
+  shows alone; a request's source keeps its country code.
+
 ## [1.4.1] — 2026-10-22
 
 ### Changed
@@ -326,6 +335,7 @@ First public release.
   filesystem, no Linux capabilities and `no-new-privileges`.
 - Works on phones: slide-in menu, readable request lists, folding filters.
 
+[1.4.2]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.4.2
 [1.4.1]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.4.1
 [1.4.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.4.0
 [1.3.1]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.3.1

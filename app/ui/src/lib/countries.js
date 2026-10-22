@@ -51,8 +51,42 @@ export function countryName(alpha2) {
 }
 
 /** Regional-indicator flag emoji, or an empty string for unknown codes. */
+let canDrawFlags = null;
+
+/**
+ * Whether this browser draws flag emoji as flags. Windows has none: Chrome
+ * and Edge there draw the two letters instead, so "🇺🇸 US" read as "us US".
+ * Tested once by drawing one on a canvas — a flag has colour, the fallback
+ * letters are plain text.
+ */
+function flagsDrawn() {
+  if (canDrawFlags !== null) return canDrawFlags;
+  canDrawFlags = false;
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 24;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.textBaseline = 'top';
+    ctx.font = '20px sans-serif';
+    ctx.fillStyle = '#000';
+    ctx.fillText('\u{1F1FA}\u{1F1F8}', 0, 0);
+    const px = ctx.getImageData(0, 0, 24, 24).data;
+    for (let i = 0; i < px.length; i += 4) {
+      if (px[i + 3] && (Math.abs(px[i] - px[i + 1]) > 16 || Math.abs(px[i + 1] - px[i + 2]) > 16)) {
+        canDrawFlags = true;
+        break;
+      }
+    }
+  } catch {
+    /* no canvas: leave flags out */
+  }
+  return canDrawFlags;
+}
+
+/** A country's flag emoji, or '' where the browser cannot draw it. */
 export function flag(alpha2) {
   if (!alpha2 || alpha2.length !== 2 || !/^[A-Z]{2}$/.test(alpha2)) return '';
+  if (!flagsDrawn()) return '';
   return String.fromCodePoint(
     ...[...alpha2].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65)
   );
