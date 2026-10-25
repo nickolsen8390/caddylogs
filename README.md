@@ -581,7 +581,8 @@ The interface is built on the assumption it may be internet-facing.
 - `X-Forwarded-For` is honoured **only** from `TRUSTED_PROXIES`, so a client
   cannot spoof its address to dodge the login throttle.
 - Strict CSP (`default-src 'none'`, no inline scripts, no CDNs — the whole UI
-  including the world map is bundled), HSTS, `nosniff`, `frame-ancestors none`,
+  including the world map is bundled), HSTS, `nosniff`, `frame-ancestors none`
+  (or the portals in `EMBED_ORIGINS`, below),
   `no-referrer`.
 - Containers run as a non-root user with a read-only root filesystem, all
   capabilities dropped and `no-new-privileges`. Your Caddy log directory is
@@ -600,6 +601,51 @@ The interface is built on the assumption it may be internet-facing.
 
 Set `COOKIE_SECURE=false` only for plain-HTTP local testing — with it false over
 HTTP the session cookie is not marked `Secure`.
+
+### Embedding in a portal
+
+By default no page may show the interface in a frame (`frame-ancestors
+'none'`, `X-Frame-Options: DENY`). To show it in a portal, list the portal's
+origins in `EMBED_ORIGINS` — `scheme://host[:port]`, no path, comma-separated:
+
+```bash
+EMBED_ORIGINS=https://homecontrol.example.com,http://10.0.0.20
+```
+
+Entries are normalised (lowercase, no trailing slash, no default port), and
+anything that is not an origin is ignored with a warning in the log. Pages
+are then sent `frame-ancestors 'self' <origins>` and no `X-Frame-Options`
+(which cannot express an allow list); API responses keep `DENY`.
+
+**Cookies.** A portal on the same site — `homecontrol.example.com` framing
+`stats.example.com`, both https — works with the usual `SameSite=Strict`
+cookie. A portal on another site, such as one opened by IP address, needs the
+interface served over **HTTPS**: with `EMBED_ORIGINS` set, sessions started
+over HTTPS get a `SameSite=None; Secure; Partitioned` cookie, which browsers
+send into a frame from another site (partitioned, it is kept per portal, and
+still works where third-party cookies are blocked). Over plain HTTP no cookie
+can cross sites; signing in then reports why instead of failing silently.
+Relaxing SameSite does not weaken CSRF protection, which rests on the token
+issued with the session.
+
+**Sign-in by the portal.** In a frame, and only with `EMBED_ORIGINS` set, the
+interface talks to its parent with `postMessage`, posting each message once
+for every allowed origin (the browser delivers the one that matches):
+
+| Direction | Message |
+|---|---|
+| to the portal | `{ source: "caddylogs", type: "login-required" }` — the Sign in screen is showing, including after a session expires |
+| to the portal | `{ source: "caddylogs", type: "logged-in", user }` — after a successful sign-in |
+| to the portal | `{ source: "caddylogs", type: "login-failed", status, message }` — after a failed sign-in the portal started; `message` is for a person |
+| to the portal | `{ source: "caddylogs", type: "navigated", path }` — on load and every page change (path and query) |
+| from the portal | `{ source: "embedder", type: "login", username, password }` |
+
+The portal's `login` is accepted only from the parent window, from an allowed
+origin, while the Sign in screen is showing; it signs in as if typed, without
+"keep me signed in". In a frame, a sign-in counts as successful only once the
+session cookie is seen to come back — otherwise `login-failed` says why
+(status 200 in that case: the password was right). The password is never
+logged.
 
 ## 8. Configuration reference
 
@@ -624,6 +670,7 @@ likely to change:
 | `MAX_DB_SIZE` | — (no limit) | largest the database may grow, e.g. `10GB`, to start with; then the Settings page |
 | `DIM_HOURLY_MAX` | `2000` | values one dimension may gather in an hour before it is trimmed right away (see §5) |
 | `IGNORE_HOSTS` / `IGNORE_CIDRS` | — | traffic never recorded (healthchecks, monitoring) |
+| `EMBED_ORIGINS` | — (no framing) | origins allowed to show the interface in a frame, and to sign in for it (see §7) |
 | `BOT_HEADER_CHECK` | `true` | count a "Chrome" that sends no Sec-Fetch / client-hint headers as a bot |
 | `STREAM_POLL_MS` | `400` | live-tail latency |
 | `INGEST_BACKFILL` | `true` | read existing logs from the start on first run |

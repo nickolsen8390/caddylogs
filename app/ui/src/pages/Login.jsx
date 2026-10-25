@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, ApiError } from '../lib/api.js';
+import { cookieRefusedMessage, embedded, onParentLogin, tellParent } from '../lib/embed.js';
 
 const MESSAGES = {
   invalid_credentials: 'Incorrect username or password.',
@@ -51,6 +52,22 @@ const INSECURE_CAUSES = {
     ),
   },
 };
+
+/** The same, as plain text, for an embedding portal's login-failed message. */
+const INSECURE_TEXT = {
+  forwarded_proto_not_https:
+    'the proxy says the browser connected over plain HTTP, so the Secure session cookie would be discarded. Reach the site as https://.',
+  no_forwarded_proto:
+    'no X-Forwarded-Proto header arrived — the browser reached the app directly rather than through the proxy. Use the proxied hostname.',
+  untrusted_proxy:
+    'X-Forwarded-Proto arrived from an address not in TRUSTED_PROXIES and was ignored. Add the proxy to TRUSTED_PROXIES in .env.',
+  trust_proxy_disabled:
+    'TRUST_PROXY is false, so proxy headers are ignored. Set TRUST_PROXY=true behind a reverse proxy.',
+};
+const insecureText = (reason) =>
+  `Signed in, but the session cookie cannot be stored: ${
+    INSECURE_TEXT[reason] ?? 'COOKIE_SECURE=true and this is not a secure context. Serve the UI over HTTPS.'
+  }`;
 
 /**
  * Your password was right, but the session cookie could not survive. Shown in
@@ -109,31 +126,70 @@ export default function Login({ onSuccess, rememberDays = 0 }) {
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [insecure, setInsecure] = useState(null);
+  const busyRef = useRef(false);
 
-  async function submit(e) {
-    e.preventDefault();
-    if (busy) return;
+  /**
+   * Sign in, typed or asked for by an embedding portal (`fromParent`), which
+   * is then told the outcome (lib/embed.js). The password goes only to
+   * /api/auth/login; it is never logged or kept.
+   */
+  async function signIn({ user, pass, keep, fromParent }) {
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     setError(null);
+    setInsecure(null);
     try {
-      const res = await api.post('/api/auth/login', {
-        username,
-        password,
-        remember: rememberDays > 0 && remember,
-      });
+      const res = await api.post('/api/auth/login', { username: user, password: pass, remember: keep });
+      // In a frame, a session cookie can be accepted by the server yet never
+      // stored or sent by the browser (a frame from another site). Check it
+      // arrives before calling this a success, rather than bouncing back here.
+      if (embedded()) {
+        const me = await api.get('/api/auth/me');
+        if (!me?.authenticated) {
+          const message = cookieRefusedMessage();
+          setError(message);
+          if (fromParent) tellParent({ type: 'login-failed', status: 200, message });
+          return;
+        }
+      }
+      tellParent({ type: 'logged-in', user: res.username });
       onSuccess(res);
     } catch (err) {
+      const status = err instanceof ApiError ? err.status : 0;
       const code = err instanceof ApiError ? err.code : null;
+      let message;
       if (code === 'insecure_context') {
         setInsecure({ reason: err.body?.reason, observed: err.body?.observed });
-        setError(null);
+        message = insecureText(err.body?.reason);
       } else {
-        setError(MESSAGES[code] ?? 'Sign-in failed. Please try again.');
+        message = MESSAGES[code] ??
+          (status ? 'Sign-in failed. Please try again.' : `Could not reach the server: ${err?.message ?? 'network error'}`);
+        setError(message);
       }
+      if (fromParent) tellParent({ type: 'login-failed', status, message });
       setPassword('');
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
+  }
+  const signInRef = useRef(signIn);
+  signInRef.current = signIn;
+
+  // Embedded: say the Sign in screen is showing, and take the portal's
+  // credentials while it is (this listener lives only as long as the screen).
+  useEffect(() => {
+    tellParent({ type: 'login-required' });
+    return onParentLogin(({ username: user, password: pass }) => {
+      setUsername(user);
+      signInRef.current({ user, pass, keep: false, fromParent: true });
+    });
+  }, []);
+
+  function submit(e) {
+    e.preventDefault();
+    signIn({ user: username, pass: password, keep: rememberDays > 0 && remember, fromParent: false });
   }
 
   return (

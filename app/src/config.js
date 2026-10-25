@@ -25,6 +25,36 @@ const list = (v) =>
 
 const env = process.env;
 
+/**
+ * EMBED_ORIGINS: the origins (scheme://host[:port]) allowed to show this app
+ * in a frame. Each is normalised by URL — scheme and host lowercased, the
+ * trailing slash and a default port dropped. Anything that is not exactly an
+ * http(s) origin (a path, a query, credentials, a wildcard) is left out and
+ * reported in `invalid`, which the web process logs at startup.
+ * @returns {{origins: string[], invalid: string[]}}
+ */
+export function parseOrigins(raw) {
+  const origins = [];
+  const invalid = [];
+  for (const entry of list(raw)) {
+    let u = null;
+    try {
+      u = new URL(entry);
+    } catch {
+      /* not a URL at all */
+    }
+    const ok =
+      u &&
+      (u.protocol === 'https:' || u.protocol === 'http:') &&
+      !entry.includes('*') &&
+      (u.pathname === '/' || u.pathname === '') &&
+      !u.search && !u.hash && !u.username && !u.password;
+    if (!ok) invalid.push(entry);
+    else if (!origins.includes(u.origin)) origins.push(u.origin);
+  }
+  return { origins, invalid };
+}
+
 export const NOTOOLKIT_DEFAULT_URL = 'https://api.notoolkit.com/v1/';
 const RETIRED_HOSTS = new Set(['notoolkit.com', 'www.notoolkit.com']);
 
@@ -97,6 +127,9 @@ export const config = {
       ? list(env.TRUSTED_PROXIES)
       : ['127.0.0.1', '::1', '172.16.0.0/12', '10.0.0.0/8', '192.168.0.0/16'],
     cookieSecure: bool(env.COOKIE_SECURE, true),
+    // Pages allowed to show this app in a frame (see parseOrigins, and the
+    // embedding protocol in ui/src/lib/embed.js). Empty: framing is refused.
+    embed: parseOrigins(env.EMBED_ORIGINS),
     maxAttempts: int(env.LOGIN_MAX_ATTEMPTS, 8),
     windowMinutes: int(env.LOGIN_WINDOW_MINUTES, 15),
     apiRateLimit: int(env.API_RATE_LIMIT, 600),

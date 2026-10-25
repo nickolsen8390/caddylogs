@@ -4,6 +4,35 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org): a new major version (2.0.0) is the
 only kind that can require you to change anything when upgrading.
 
+## [1.5.0] — 2026-10-24
+
+### Added
+
+- **Embedding in a portal.** `EMBED_ORIGINS` lists the origins allowed to
+  show the interface in a frame (`scheme://host[:port]`, comma-separated;
+  normalised, and invalid entries ignored with a warning). With it set, pages
+  are sent `frame-ancestors 'self' <origins>` and no `X-Frame-Options`; API
+  responses keep `DENY`. Empty, the default, every header is as before.
+  - Sessions started over HTTPS get a `SameSite=None; Secure; Partitioned`
+    cookie, so a portal on another site (opened by IP address, say) works.
+    A portal on the same site works with the usual cookie, over HTTP too.
+  - The portal can sign in for the user. In a frame, the interface tells its
+    parent `login-required`, `logged-in`, `login-failed` and `navigated`
+    through `postMessage`, and accepts the portal's `login` message — only
+    from the parent window, from an allowed origin, while the Sign in screen
+    is showing. See README, "Embedding in a portal".
+  - A sign-in in a frame counts only once the session cookie comes back; a
+    browser refusing it — another site over plain HTTP, or third-party
+    cookies blocked — is reported as `login-failed`, with what to do, instead
+    of a silent return to the Sign in screen.
+- `src/tools/embed-test.html`: a stand-in portal for checking all of the
+  above.
+
+### Fixed
+
+- An IPv4 address written in IPv6 form (`::ffff:10.0.0.1`) was stored as no
+  source address at all.
+
 ## [1.4.2] — 2026-10-22
 
 ### Fixed
@@ -335,6 +364,7 @@ First public release.
   filesystem, no Linux capabilities and `no-new-privileges`.
 - Works on phones: slide-in menu, readable request lists, folding filters.
 
+[1.5.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.5.0
 [1.4.2]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.4.2
 [1.4.1]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.4.1
 [1.4.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.4.0

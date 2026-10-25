@@ -8,10 +8,13 @@ export function normalizeIp(raw) {
   if (ip.startsWith('[')) {
     const end = ip.indexOf(']');
     if (end > 0) ip = ip.slice(1, end);
-  } else if (ip.includes('.') && ip.includes(':')) {
-    ip = ip.split(':')[0];
   }
-  if (/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.test(ip)) ip = ip.replace(/^::ffff:/i, '');
+  // An IPv4 address in IPv6 form (::ffff:10.0.0.1) has dots and colons too,
+  // so it must be unwrapped before the address:port split below, which
+  // would otherwise cut it down to nothing.
+  const mapped = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)(?::\d+)?$/i);
+  if (mapped) return mapped[1];
+  if (ip.includes('.') && ip.includes(':')) ip = ip.split(':')[0];
   return ip.toLowerCase() || null;
 }
 

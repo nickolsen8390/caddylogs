@@ -1,0 +1,89 @@
+<!doctype html>
+<!--
+  A stand-in portal for checking EMBED_ORIGINS and the sign-in protocol
+  (README, "Embedding in a portal"). Serve this file from an origin listed in
+  EMBED_ORIGINS — any static server will do, e.g.
+
+    npx http-server -p 8901 app/src/tools
+
+  — and open http://<that origin>/embed-test.html?app=https://stats.example.com
+  It frames the app, shows every message the app posts, and can send the
+  portal's login message. It answers login-required once per sign-in, as a
+  real portal does, only when "Sign in automatically" is ticked.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Embed test portal</title>
+  <style>
+    :root { color-scheme: light dark; font: 13px/1.45 system-ui, sans-serif; }
+    body { margin: 0; display: grid; grid-template-columns: 340px 1fr; height: 100vh; }
+    aside { padding: 12px; overflow: auto; border-right: 1px solid #8884; }
+    iframe { width: 100%; height: 100%; border: 0; }
+    label { display: block; margin: 8px 0 2px; font-weight: 600; }
+    input[type=text], input[type=password], input[type=url] { width: 100%; box-sizing: border-box; padding: 4px 6px; }
+    button { margin-top: 8px; }
+    #log { font: 11.5px ui-monospace, monospace; white-space: pre-wrap; margin-top: 12px; }
+    #log div { border-top: 1px solid #8883; padding: 3px 0; }
+  </style>
+</head>
+<body>
+  <aside>
+    <strong>Embed test portal</strong>
+    <div id="me"></div>
+    <label for="app">App URL</label>
+    <input id="app" type="url">
+    <button id="load">Load in frame</button>
+    <label for="user">Username</label>
+    <input id="user" type="text" autocomplete="off">
+    <label for="pass">Password</label>
+    <input id="pass" type="password" autocomplete="off">
+    <label><input id="auto" type="checkbox"> Sign in automatically on login-required</label>
+    <button id="send">Send login now</button>
+    <div id="log"></div>
+  </aside>
+  <iframe id="frame" title="App under test"></iframe>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const params = new URLSearchParams(location.search);
+    $('app').value = params.get('app') || 'http://localhost:8899/';
+    $('me').textContent = `This page's origin: ${location.origin}`;
+    let appOrigin = null;
+    let answered = false; // login-required is answered once per sign-in
+
+    function log(text) {
+      const div = document.createElement('div');
+      div.textContent = `${new Date().toLocaleTimeString()}  ${text}`;
+      $('log').prepend(div);
+    }
+    function load() {
+      appOrigin = new URL($('app').value).origin;
+      answered = false;
+      $('frame').src = $('app').value;
+      log(`loading ${$('app').value}`);
+    }
+    function sendLogin() {
+      if (!appOrigin) return;
+      answered = true;
+      $('frame').contentWindow.postMessage(
+        { source: 'embedder', type: 'login', username: $('user').value, password: $('pass').value },
+        appOrigin
+      );
+      log(`→ login as ${$('user').value}`);
+    }
+    window.addEventListener('message', (e) => {
+      if (e.origin !== appOrigin || e.source !== $('frame').contentWindow) return;
+      const d = e.data;
+      if (!d || d.source !== 'caddylogs') return;
+      log(`← ${JSON.stringify(d)}`);
+      window.lastMessages = (window.lastMessages || []).concat([d]);
+      if (d.type === 'login-required' && $('auto').checked && !answered) sendLogin();
+      if (d.type === 'logged-in') answered = false;
+    });
+    $('load').onclick = load;
+    $('send').onclick = sendLogin;
+    load();
+  </script>
+</body>
+</html>

@@ -268,11 +268,29 @@ export function isLockedOut(ip) {
   return n >= config.auth.maxAttempts;
 }
 
-export function cookieOptions(persistent = false) {
+/**
+ * The session cookie's attributes for a response to `req`.
+ *
+ * SameSite=Strict by default. That also works in a frame on a page of the
+ * same site (homecontrol.example.com framing stats.example.com, both https),
+ * since SameSite only withholds cookies across sites.
+ *
+ * When EMBED_ORIGINS is set and the request came over HTTPS, the cookie is
+ * SameSite=None; Secure; Partitioned instead, so it is also set and sent in a
+ * frame on another site — a portal opened by IP address, say. Partitioned
+ * (CHIPS) keys it to the top-level site, which keeps it working where
+ * browsers block third-party cookies, and changes nothing for the app opened
+ * directly. Requests that change anything still need the CSRF token from the
+ * session, so relaxing SameSite does not open them to cross-site forgery.
+ * Over plain HTTP no cookie can cross sites; the UI says so (lib/embed.js).
+ */
+export function cookieOptions(persistent = false, req = null) {
+  const crossSite = config.auth.embed.origins.length > 0 && req && isSecureRequest(req.raw ?? req);
   return {
     httpOnly: true,
-    secure: config.auth.cookieSecure,
-    sameSite: 'strict',
+    secure: crossSite ? true : config.auth.cookieSecure,
+    sameSite: crossSite ? 'none' : 'strict',
+    ...(crossSite ? { partitioned: true } : {}),
     path: '/',
     maxAge: lifetimeSeconds(persistent),
   };

@@ -13,7 +13,7 @@ import {
 } from '../ingest/traffic.js';
 import { Accumulator, hourBucket } from '../ingest/rollup.js';
 import { visitorHash } from '../ingest/visits.js';
-import { notoolkitEndpoint, sizeMb } from '../config.js';
+import { notoolkitEndpoint, parseOrigins, sizeMb } from '../config.js';
 import { validateSettings } from '../settings.js';
 import { makeFilter, SEARCH_ONLY_FILTERS } from '../web/stream.js';
 import { describeRequest } from '../enrich/notoolkit.js';
@@ -417,6 +417,21 @@ group('Live stream filters', () => {
   ok('humans only', keeps({ bots: 'exclude' }), true);
   ok('all must match', keeps({ host: 'example.com', status: '5xx' }), false);
   ok('a time range is search-only', SEARCH_ONLY_FILTERS, ['from', 'to']);
+});
+
+group('Embedding origins', () => {
+  const p = (raw) => parseOrigins(raw);
+  ok('empty is none', p(''), { origins: [], invalid: [] });
+  ok('normalised: case, slash, default port',
+    p('HTTPS://HomeControl.Example.com:443/, http://10.30.2.38:80').origins,
+    ['https://homecontrol.example.com', 'http://10.30.2.38']);
+  ok('other ports kept', p('http://10.30.2.38:8080').origins, ['http://10.30.2.38:8080']);
+  ok('duplicates once', p('https://a.example,https://a.example/').origins, ['https://a.example']);
+  ok('a path is refused', p('https://a.example/portal').invalid, ['https://a.example/portal']);
+  ok('a wildcard is refused', p('https://*.example.com').invalid, ['https://*.example.com']);
+  ok('not a URL is refused', p('homecontrol').invalid, ['homecontrol']);
+  ok('other schemes are refused', p('ftp://a.example').invalid, ['ftp://a.example']);
+  ok('good ones kept beside bad', p('https://a.example,nope').origins, ['https://a.example']);
 });
 
 group('Changelog', () => {

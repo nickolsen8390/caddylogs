@@ -23,8 +23,16 @@ const log = logger('web');
 /** Optional parts of the interface, so the UI can leave out what is switched off. */
 const features = () => ({ caddy: config.caddy.enabled, notoolkit: config.notoolkit.enabled });
 
-/** What the sign-in page offers (0 days: no "keep me signed in"). Public. */
-const loginOptions = () => ({ rememberDays: config.auth.rememberDays });
+/**
+ * What the sign-in page offers (0 days: no "keep me signed in"), and the
+ * pages allowed to frame it, which the embedding protocol posts messages to
+ * (ui/src/lib/embed.js). Public: the sign-in page needs both before anyone
+ * has signed in.
+ */
+const loginOptions = () => ({
+  rememberDays: config.auth.rememberDays,
+  embedOrigins: config.auth.embed.origins,
+});
 
 /** Operator-facing next step for each way the secure-context check can fail. */
 const INSECURE_HINTS = {
@@ -64,7 +72,21 @@ export async function buildServer() {
     bodyLimit: 64 * 1024,
   });
 
+  // Framing by the pages in EMBED_ORIGINS. Empty, every header below is as it
+  // has always been: frame-ancestors 'none' and X-Frame-Options: DENY.
+  const embedOrigins = config.auth.embed.origins;
+  const embedding = embedOrigins.length > 0;
+  if (config.auth.embed.invalid.length) {
+    log.warn('EMBED_ORIGINS: ignoring entries that are not an origin (scheme://host[:port], no path)', {
+      ignored: config.auth.embed.invalid,
+    });
+  }
+  if (embedding) log.info('framing allowed', { origins: embedOrigins });
+
   await app.register(helmet, {
+    // X-Frame-Options cannot name an allow list, so with EMBED_ORIGINS set
+    // the page leaves it out and relies on frame-ancestors (onSend below).
+    ...(embedding ? { xFrameOptions: false } : {}),
     contentSecurityPolicy: {
       useDefaults: false,
       directives: {
@@ -78,7 +100,7 @@ export async function buildServer() {
         connectSrc: ["'self'"],
         manifestSrc: ["'self'"],
         formAction: ["'self'"],
-        frameAncestors: ["'none'"],
+        frameAncestors: embedding ? ["'self'", ...embedOrigins] : ["'none'"],
         baseUri: ["'none'"],
         objectSrc: ["'none'"],
       },
@@ -93,7 +115,10 @@ export async function buildServer() {
 
   app.addHook('onSend', async (req, reply, payload) => {
     reply.header('X-Content-Type-Options', 'nosniff');
-    reply.header('X-Frame-Options', 'DENY');
+    // The pages may be framed by EMBED_ORIGINS (frame-ancestors says which);
+    // API responses are never meant to be, so they keep DENY.
+    if (!embedding || req.url.startsWith('/api/')) reply.header('X-Frame-Options', 'DENY');
+    else reply.removeHeader('X-Frame-Options');
     reply.header('Permissions-Policy', 'geolocation=(), microphone=(), camera=(), interest-cohort=()');
     if (req.url.startsWith('/api/')) reply.header('Cache-Control', 'no-store');
     return payload;
@@ -208,7 +233,7 @@ export async function buildServer() {
         req.headers['user-agent'],
         req.body.remember === true
       );
-      reply.setCookie(COOKIE_NAME, token, cookieOptions(persistent));
+      reply.setCookie(COOKIE_NAME, token, cookieOptions(persistent, req));
       log.info('login', { ip, username, remember: persistent });
       return { username, csrf, features: features(), login: loginOptions() };
     }
@@ -216,7 +241,7 @@ export async function buildServer() {
 
   app.post('/api/auth/logout', async (req, reply) => {
     destroySession(req.cookies?.[COOKIE_NAME]);
-    reply.clearCookie(COOKIE_NAME, { ...cookieOptions(), maxAge: 0 });
+    reply.clearCookie(COOKIE_NAME, { ...cookieOptions(false, req), maxAge: 0 });
     return { ok: true };
   });
 

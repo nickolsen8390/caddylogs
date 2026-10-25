@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { api, setCsrf } from './lib/api.js';
+import { setEmbedOrigins, tellParent } from './lib/embed.js';
 import { useLocalState } from './lib/useApi.js';
 import { Icon, Spinner } from './components/ui.jsx';
 import Login from './pages/Login.jsx';
@@ -60,9 +61,15 @@ export default function App() {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
+  // Embedding (lib/embed.js): the allowed origins arrive with /api/auth/me,
+  // before the Sign in screen can tell the portal it is showing.
+  const [embedKnown, setEmbedKnown] = useState(false);
+
   const check = useCallback(async () => {
     try {
       const me = await api.get('/api/auth/me');
+      setEmbedOrigins(me?.login?.embedOrigins);
+      setEmbedKnown(true);
       const rememberDays = me?.login?.rememberDays ?? 0;
       if (me?.authenticated) {
         setCsrf(me.csrf);
@@ -83,6 +90,12 @@ export default function App() {
   useEffect(() => {
     check();
   }, [check]);
+
+  // Tell an embedding portal where this frame is, on load and on every route
+  // change, so it can reopen the same page later.
+  useEffect(() => {
+    if (embedKnown) tellParent({ type: 'navigated', path: location.pathname + location.search });
+  }, [embedKnown, location.pathname, location.search]);
 
   const onUnauthorized = useCallback(() => {
     setCsrf(null);
