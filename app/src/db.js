@@ -137,6 +137,9 @@ function migrate(db) {
     log.info('migration: added visits.closed');
   }
   db.exec('CREATE INDEX IF NOT EXISTS idx_visits_open ON visits(end_ts) WHERE closed = 0');
+  // Visits started in part of an hour, for totals over a window that does
+  // not start or end on the hour (queries.js, edgeTotals).
+  db.exec('CREATE INDEX IF NOT EXISTS idx_visits_start ON visits(start_ts)');
 
   const rollup = columns('rollup');
   for (const col of ['pageviews', 'visits', 'visitors', 'bounces', 'visit_ms']) {

@@ -106,3 +106,29 @@ const PRIVATE = cidrMatcher([
 export function isPrivateIp(ip) {
   return PRIVATE(ip);
 }
+
+/**
+ * Longest prefix carried on the internet: networks filter out anything more
+ * specific, so every address in one such block has the same route and origin.
+ */
+const BLOCK_BITS = { v4: 24, v6: 48 };
+
+/** The IPv4 /24 or IPv6 /48 an address is in, as a key; null if not an address. */
+export function blockOf(ip) {
+  if (!ip) return null;
+  if (isIPv4(ip)) {
+    const n = v4ToInt(ip);
+    return n === null ? null : `${(n >>> 8).toString(16)}/24`;
+  }
+  // An IPv4 tail in IPv6 form is left alone rather than parsed wrongly.
+  if (ip.includes('.')) return null;
+  const n = v6ToBigInt(ip);
+  return n === null ? null : `${(n >> 80n).toString(16)}::/48`;
+}
+
+/** Whether `prefix` ("2001:db8::/32") is no longer than the block `ip` is in. */
+export function prefixCoversBlock(prefix, ip) {
+  const len = Number(String(prefix ?? '').split('/')[1]);
+  if (!Number.isInteger(len) || len < 0 || !ip) return false;
+  return len <= (isIPv4(ip) ? BLOCK_BITS.v4 : BLOCK_BITS.v6);
+}

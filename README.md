@@ -287,7 +287,11 @@ to inspect those individual requests in the log stream.
 
 Hourly rows are folded into daily rows once they pass the hourly window, and
 the hourly rows are then deleted, so a period exists at exactly one granularity
-and totals can never double-count. High-cardinality dimensions (URLs, IPs, user
+and totals can never double-count. A range that does not start or end on the
+hour (the last hour, the last 24 hours) takes its whole hours from the hourly
+tier and the part-hours at either end from the stored requests, so its totals
+are exact. Further back than the stored requests reach, the part-hour at the
+start of a range is left out and the one at its end counted whole. High-cardinality dimensions (URLs, IPs, user
 agents, referrers) are trimmed to the top `DIM_TOP_N` values per bucket after
 `DIM_COMPACT_AFTER_DAYS`, with the remainder folded into a single `(other)` row
 so totals stay exact while storage stays bounded. The most-errored values are
@@ -452,6 +456,10 @@ The tailer tracks files by **inode**, not path. When Caddy rotates
 the inode, so the rotated file is read to its end and the new `access.log`
 starts cleanly at zero. Truncation in place is detected and restarts that file.
 
+A file's read position is saved in the same transaction as the requests read
+up to it, so a crash, `docker kill` or power cut neither loses requests nor
+stores any twice: reading resumes just after the last request stored.
+
 ## 6. IP enrichment
 
 ### What is sent, and how to turn it off
@@ -503,6 +511,13 @@ Per-IP results are cached in SQLite for `ENRICH_TTL_DAYS`. Ingest waits at most
 known locally, queued, and resolved in the background, so the cache is warm for
 that address from then on. Private-range addresses are never sent anywhere.
 
+Addresses in the same IPv4 /24 or IPv6 /48 share one lookup. No route more
+specific than that is carried on the internet, so every address in such a
+block has the same prefix and AS; the answer is shared only when the prefix it
+names covers the whole block. This matters most for IPv6, where a client may
+use a new address for almost every connection: a burst of one-time addresses
+from a few networks costs a few lookups, not one each.
+
 Per-ASN registrant detail is fetched **once per ASN**, not per request — that
 set is bounded by the number of networks that talk to your server, so the
 `whois_raw` text and prefix counts cost one lookup each and are refreshed every
@@ -521,7 +536,14 @@ things:
 | `503`, other 5xx, timeout, network error | transient. Retried with exponential backoff (1m → 1h, `NOTOOLKIT_MAX_RETRIES` attempts), provider marked unhealthy, banner shown. |
 
 Requests are rate-limited client-side to `NOTOOLKIT_RATE_PER_SEC` (default 10)
-with a token bucket, on top of notoolkit's own 24-hour Redis cache.
+with a token bucket, on top of notoolkit's own 24-hour Redis cache. The
+background queue keeps `NOTOOLKIT_CONCURRENCY` lookups (default 4) in flight
+at all times while it has a backlog, so those two settings set its pace:
+concurrency needs to be at least the rate times the API's response time in
+seconds (100 per second at 0.2 s needs 20). Lookups for requests being
+stored now go ahead of the queue. While there is a backlog, the log has an
+`enrichment progress` line a minute, with addresses resolved and lookups
+made per second, and how many were left in the queue.
 
 The whole wire format lives in one file, `app/src/enrich/notoolkit.js`. The
 public API needs no authentication; `NOTOOLKIT_API_KEY` / `NOTOOLKIT_AUTH_HEADER`

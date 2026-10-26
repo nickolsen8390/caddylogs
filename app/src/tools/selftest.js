@@ -5,7 +5,7 @@
 //
 //   docker compose run --rm --no-deps app node src/tools/selftest.js
 
-import { cidrMatcher, isPrivateIp, normalizeIp, isIPv4 } from '../util/net.js';
+import { blockOf, cidrMatcher, isPrivateIp, normalizeIp, isIPv4, prefixCoversBlock } from '../util/net.js';
 import { parseLine, latencyBucket, extensionOf, refererHost } from '../ingest/parser.js';
 import { parseUserAgent } from '../ingest/useragent.js';
 import {
@@ -90,6 +90,24 @@ group('IP normalisation', () => {
   ok('handles empty input', normalizeIp(''), null);
   ok('isIPv4 says yes', isIPv4('10.0.0.1'), true);
   ok('isIPv4 says no', isIPv4('2606:4700::1111'), false);
+});
+
+group('Network blocks (shared enrichment lookups)', () => {
+  const b = (ip) => blockOf(ip);
+  ok('IPv4 in one /24 share a block', b('203.0.113.7') === b('203.0.113.250'), true);
+  ok('IPv4 in neighbouring /24s do not', b('203.0.113.7') === b('203.0.114.7'), false);
+  ok('IPv4 above 128.0.0.0 has a block', b('198.51.100.1') !== null, true);
+  ok('IPv6 in one /48 share a block', b('2001:db8:1234:1::1') === b('2001:db8:1234:ffff:abcd::9'), true);
+  ok('IPv6 written short or long agree', b('2001:db8:0:1::1') === b('2001:0db8:0000:ffff:0:0:0:1'), true);
+  ok('IPv6 in neighbouring /48s do not', b('2001:db8:1234::1') === b('2001:db8:1235::1'), false);
+  ok('IPv6 with :: at the start', b('::1') !== null, true);
+  ok('not an address', b('not-an-ip'), null);
+  ok('a /32 covers a /48 block', prefixCoversBlock('2001:db8::/32', '2001:db8:1::1'), true);
+  ok('a /48 covers its block', prefixCoversBlock('2001:db8:1::/48', '2001:db8:1::1'), true);
+  ok('a /56 does not', prefixCoversBlock('2001:db8:1:100::/56', '2001:db8:1:100::1'), false);
+  ok('a /24 covers an IPv4 block', prefixCoversBlock('203.0.113.0/24', '203.0.113.9'), true);
+  ok('a /25 does not', prefixCoversBlock('203.0.113.0/25', '203.0.113.9'), false);
+  ok('no prefix shares nothing', prefixCoversBlock(null, '203.0.113.9'), false);
 });
 
 group('Caddy JSON access log parsing', () => {

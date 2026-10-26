@@ -13,7 +13,7 @@ import { getDb, usedBytes } from './db.js';
 import { config } from './config.js';
 import { logger } from './util/log.js';
 import { DAY, oldestOpenVisitHour } from './ingest/rollup.js';
-import { SALT_PREFIX, forgetSalts } from './ingest/visits.js';
+import { SALT_PREFIX, VISIT_KEEP_MS, forgetSalts } from './ingest/visits.js';
 import { rawRetentionMs, maxDbBytes } from './settings.js';
 
 const log = logger('maintain');
@@ -322,7 +322,7 @@ function prune(db) {
   // after a week means closing is stuck; it is not kept forever either.
   out.visits = db
     .prepare('DELETE FROM visits WHERE touched < ? AND (closed = 1 OR touched < ?)')
-    .run(Date.now() - 26 * 3_600_000, Date.now() - 7 * 86_400_000).changes;
+    .run(Date.now() - VISIT_KEEP_MS, Date.now() - 7 * 86_400_000).changes;
 
   // Visitor salts, once no stored request from that day can still need one
   // (re-reading a stored request can derive its visitor again). Afterwards

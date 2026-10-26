@@ -284,9 +284,14 @@ export async function buildServer() {
     },
   });
 
-  // SPA fallback: any non-API path renders the app shell.
+  // SPA fallback: any other path renders the app shell. Not for a built file
+  // that is not there (a page from before a release asking for its old
+  // files): the app shell in its place would be taken for the script, and
+  // the service worker would keep it.
   app.setNotFoundHandler((req, reply) => {
-    if (req.url.startsWith('/api/')) return reply.code(404).send({ error: 'not_found' });
+    if (req.url.startsWith('/api/') || req.url.startsWith('/assets/')) {
+      return reply.code(404).send({ error: 'not_found' });
+    }
     return reply.sendFile('index.html');
   });
 

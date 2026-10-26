@@ -8,6 +8,22 @@ import { TimeRange } from '../components/TimeRange.jsx';
 import { countryName, flag } from '../lib/countries.js';
 import { bytes, compact, ms, num, pct } from '../lib/format.js';
 
+/** A per-second rate, with the decimals it needs to mean something. */
+function perSec(n) {
+  if (!Number.isFinite(n)) return '—';
+  if (n >= 1000) return compact(n);
+  if (n >= 100) return num(Math.round(n));
+  return n.toFixed(n >= 10 ? 1 : 2);
+}
+
+/** "minute", "5 minutes", "hour"… for a series step in seconds. */
+function stepName(sec) {
+  if (sec % 86400 === 0) return sec === 86400 ? 'day' : `${sec / 86400} days`;
+  if (sec % 3600 === 0) return sec === 3600 ? 'hour' : `${sec / 3600} hours`;
+  if (sec % 60 === 0) return sec === 60 ? 'minute' : `${sec / 60} minutes`;
+  return `${sec} s`;
+}
+
 export default function Dashboard({ ctx }) {
   const { range, setRange, onUnauthorized } = ctx;
   const meta = useApi('/api/meta', { refreshMs: 60_000, onUnauthorized });
@@ -18,6 +34,8 @@ export default function Dashboard({ ctx }) {
 
   const t = data?.totals;
   const p = data?.previous;
+  // Worked out by the server (/api/overview), which knows what each count covers.
+  const rate = data?.rate;
   const warnings = meta.data?.warnings ?? [];
 
   return (
@@ -55,6 +73,10 @@ export default function Dashboard({ ctx }) {
           <div className="grid stats" style={{ marginBottom: 14 }}>
             <Stat label="Requests" to="/requests" value={compact(t.requests)} current={t.requests} previous={p?.requests}
                   sub={`${num(t.requests)} total`} />
+            {rate && (
+              <Stat label="Requests per second" value={perSec(rate.mean)} current={rate.mean} previous={rate.previous}
+                    sub={rate.peak !== null ? `busiest ${stepName(rate.step)} ${perSec(rate.peak)}/s` : 'mean over the range'} />
+            )}
             <Stat label="Success rate" value={pct(t.success_rate)} current={t.success_rate}
                   previous={p?.success_rate} sub={`${compact(t.c2xx + t.c3xx)} 2xx/3xx`}
                   tone={t.success_rate > 0.95 ? 'green' : t.success_rate > 0.85 ? 'amber' : 'red'} />

@@ -4,6 +4,81 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org): a new major version (2.0.0) is the
 only kind that can require you to change anything when upgrading.
 
+## [1.7.0] — 2026-10-26
+
+### Added
+
+- Dashboard: **Requests per second**, the mean over the selected range with
+  the busiest minute, hour or day beside it. The mean covers only the time
+  there is data for, so a new install is not averaged against hours it was
+  not running.
+
+### Changed
+
+- IP enrichment is much faster through a backlog. The background queue took
+  50 addresses every 5 seconds, so it never resolved more than 10 a second,
+  whatever `NOTOOLKIT_RATE_PER_SEC` and `NOTOOLKIT_CONCURRENCY` allowed. It
+  now keeps `NOTOOLKIT_CONCURRENCY` lookups in flight for as long as there
+  is a backlog, so the rate limit sets the pace (in a test at 100 per
+  second: 10 addresses a second before, 200 now).
+  - Addresses in the same IPv4 /24 or IPv6 /48 share one lookup, since no
+    more specific route is carried on the internet; an answer is shared only
+    when the prefix it names covers the whole block. A burst of one-time
+    IPv6 addresses from a few networks now costs a few lookups, not one each.
+  - Lookups for requests being stored now go ahead of the queue, so a
+    backlog does not push them past their time budget.
+  - While there is a backlog, the log has an `enrichment progress` line a
+    minute: addresses resolved and lookups made per second, and what is
+    left in the queue.
+
+### Fixed
+
+- Totals for a range that does not start on the hour were off by up to an
+  hour's traffic. They added whole hours from the first one starting inside
+  the range, so "last hour" at 18:20 counted only since 18:00 — in a test,
+  2,041 of 3,137 requests — "last 24 hours" missed up to an hour, and a
+  range inside one hour could count that whole hour. Every headline number
+  was affected (requests, errors, bandwidth, clients, visitors, visits,
+  bounces, domains), on the Dashboard, Traffic and domain pages, and so
+  were the changes from the previous period. The whole hours still come
+  from the hourly totals; the part-hours at either end now come from the
+  stored requests, which also counts the last few seconds not yet rolled up.
+  Visits in a part-hour are counted from the visits themselves for about a
+  day, then estimated from that hour's count. Older than the stored
+  requests, ranges are rounded to the hour as before.
+- Requests: coming back to the live view on a phone could leave it showing
+  "Reconnecting…" for good. The browser's own retry gives up once a
+  reconnect is refused (a session that ended meanwhile, a rate limit), and a
+  phone that sleeps or changes network can leave the stream silently dead.
+  The page now keeps the stream open itself:
+  - a stream that closes, or goes quiet for 30 seconds, is reopened, with
+    waits growing from 1 to 30 seconds; returning to the page or coming back
+    online reopens it at once, and the banner has a "Reconnect now" button;
+  - the requests that arrived while it was down are filled in, in order.
+    After more than 200, the view starts again from the newest, with older
+    ones a click away; while paused, they wait behind Resume;
+  - when the session has ended, the Sign in screen shows instead.
+- The server sends the live view an event at least every 10 seconds, so a
+  quiet stream can be told from a dead one, and drops a stream whose reader
+  has stopped reading (over 1 MB unsent) instead of holding one of its 32
+  places until the operating system gives up on the connection.
+- Requests could be lost when the app was stopped abruptly — a crash, out
+  of memory, `docker kill`, a power cut, or a `docker stop` past its
+  timeout. The read position in the log was saved as soon as lines were
+  read, but the lines themselves only with the next batch, up to a second
+  later; on restart, reading resumed after them. The position is now saved
+  in the same transaction as the requests it covers, so nothing is lost and
+  nothing is stored twice. (In a test with 40 forced stops during heavy
+  logging, 1.6.0 lost about 30% of lines; this version lost none.)
+  - A batch the database refuses is now tried again, twice, before it is
+    given up on, and the per-day line counts no longer miss lines read
+    while a batch was being written.
+  - A normal stop that comes during a batch write now waits for it, then
+    writes the rest.
+- A missing file under `/assets/` was answered with the app's page and
+  status 200; it is now a 404. A tab left open across an upgrade could
+  otherwise take that page for one of its scripts, and the service worker
+  would have kept it.
 ## [1.6.0] — 2026-10-26
 
 ### Added
@@ -387,6 +462,7 @@ First public release.
   filesystem, no Linux capabilities and `no-new-privileges`.
 - Works on phones: slide-in menu, readable request lists, folding filters.
 
+[1.7.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.7.0
 [1.6.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.6.0
 [1.5.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.5.0
 [1.4.2]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.4.2

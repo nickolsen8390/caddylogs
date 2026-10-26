@@ -46,15 +46,29 @@ function prep() {
   return stmts;
 }
 
+/** Attempts at writing a batch before it is given up on. */
+const FLUSH_ATTEMPTS = 3;
+
+const noCounts = () => ({ lines: 0, parsed: 0, skipped: 0, malformed: 0 });
+
 export class Ingestor {
   constructor() {
     this.buffer = [];
-    this.counters = { lines: 0, parsed: 0, skipped: 0, malformed: 0 };
+    this.counters = noCounts();
+    // Read positions reached by the lines in `buffer`, by inode. They are
+    // saved in the transaction that stores those lines, never before: a
+    // position saved ahead of its lines would let a crash skip them for good.
+    this.positions = new Map();
     this.ignoreCidr = cidrMatcher(config.ignoreCidrs);
-    this.flushing = false;
+    this.flushing = null; // the flush under way
+    this.failures = 0;
     this.tailer = null;
     this.flushTimer = null;
   }
+
+  handleCheckpoint = (cp) => {
+    this.positions.set(cp.inode, cp);
+  };
 
   handleLines = async (lines) => {
     for (const line of lines) {
@@ -76,29 +90,43 @@ export class Ingestor {
     if (this.buffer.length >= config.ingest.batchSize) await this.flush();
   };
 
-  async flush() {
-    if (this.flushing || !this.buffer.length) return;
-    this.flushing = true;
+  flush() {
+    if (this.flushing || (!this.buffer.length && !this.positions.size)) return this.flushing ?? Promise.resolve();
+    this.flushing = this.write().finally(() => {
+      this.flushing = null;
+    });
+    return this.flushing;
+  }
+
+  async write() {
+    // Taken together, so the positions saved are the ones these lines reach.
+    // Lines read while this runs collect for the next flush.
     const batch = this.buffer;
+    const positions = this.positions;
+    const counters = this.counters;
     this.buffer = [];
+    this.positions = new Map();
+    this.counters = noCounts();
     try {
-      const ips = new Set();
-      for (const ev of batch) if (ev.ip) ips.add(ev.ip);
+      if (batch.length) {
+        const ips = new Set();
+        for (const ev of batch) if (ev.ip) ips.add(ev.ip);
 
-      // Bounded wait: whatever has not resolved gets written with the local
-      // answer and is repaired by the rollup pass once the worker catches up.
-      let info = new Map();
-      try {
-        info = await resolveMany(ips, config.enrich.inlineTimeoutMs);
-      } catch (err) {
-        log.warn('enrichment batch failed; writing without ASN data', { err: String(err) });
-      }
+        // Bounded wait: whatever has not resolved gets written with the local
+        // answer and is repaired by the rollup pass once the worker catches up.
+        let info = new Map();
+        try {
+          info = await resolveMany(ips, config.enrich.inlineTimeoutMs);
+        } catch (err) {
+          log.warn('enrichment batch failed; writing without ASN data', { err: String(err) });
+        }
 
-      for (const ev of batch) {
-        const rec = ev.ip ? info.get(ev.ip) : null;
-        ev.country = rec?.country ?? null;
-        ev.asn = rec?.asn ?? null;
-        ev.as_org = rec?.as_org ?? rec?.as_name ?? null;
+        for (const ev of batch) {
+          const rec = ev.ip ? info.get(ev.ip) : null;
+          ev.country = rec?.country ?? null;
+          ev.asn = rec?.asn ?? null;
+          ev.as_org = rec?.as_org ?? rec?.as_name ?? null;
+        }
       }
 
       const db = getDb();
@@ -108,15 +136,36 @@ export class Ingestor {
           const id = s.insert.run(ev).lastInsertRowid;
           s.insertRaw.run(id, packRaw(raw));
         }
-        const day = Math.floor(Date.now() / 86_400_000) * 86400;
-        s.stats.run({ day, ...this.counters });
+        if (counters.lines) {
+          const day = Math.floor(Date.now() / 86_400_000) * 86400;
+          s.stats.run({ day, ...counters });
+        }
+        for (const cp of positions.values()) this.tailer.saveCheckpoint(cp);
       });
       write(batch);
-      this.counters = { lines: 0, parsed: 0, skipped: 0, malformed: 0 };
+      this.failures = 0;
     } catch (err) {
+      this.failures += 1;
+      if (this.failures < FLUSH_ATTEMPTS) {
+        // Back in front of whatever was read meanwhile, for the next flush.
+        // Its positions go back too, unless a later one has arrived.
+        log.warn('flush failed; will retry', { err: String(err), size: batch.length, attempt: this.failures });
+        this.buffer = batch.concat(this.buffer);
+        for (const [inode, cp] of positions) if (!this.positions.has(inode)) this.positions.set(inode, cp);
+        for (const k of Object.keys(counters)) this.counters[k] += counters[k];
+        return;
+      }
+      this.failures = 0;
       log.error('flush failed; batch dropped', { err: String(err), size: batch.length });
-    } finally {
-      this.flushing = false;
+      // Still move the read positions past it, or a restart would read the
+      // same lines and fail on them again.
+      try {
+        getDb().transaction(() => {
+          for (const cp of positions.values()) this.tailer.saveCheckpoint(cp);
+        })();
+      } catch (err2) {
+        log.error('saving read positions failed', { err: String(err2) });
+      }
     }
   }
 
@@ -134,6 +183,7 @@ export class Ingestor {
       dir: config.logDir,
       glob: config.logGlob,
       onLines: this.handleLines,
+      onCheckpoint: this.handleCheckpoint,
       backfill: process.env.INGEST_BACKFILL !== 'false',
       backfillMaxDays: parseInt(process.env.INGEST_BACKFILL_MAX_DAYS || '0', 10),
     });
@@ -150,6 +200,8 @@ export class Ingestor {
     stopEnrichWorker();
     stopMaintenance();
     stopRestoreWatcher();
+    // One may be under way, holding only the lines it took; then the rest.
+    await this.flushing;
     await this.flush();
   }
 }

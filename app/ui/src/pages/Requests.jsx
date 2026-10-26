@@ -27,6 +27,23 @@ const PAGE = 100;
 /** Requests kept on screen while streaming; older ones scroll away. */
 const MAX_LIVE_ROWS = 3000;
 /**
+ * A stream that has sent nothing for this long is taken to be dead. The
+ * server sends a `ping` at least every 10 s (web/routes.js), so a live one
+ * never goes this quiet.
+ */
+const STALE_MS = 30_000;
+/** Waits before each successive attempt to reopen the stream. */
+const RETRY_MS = [1000, 2000, 5000, 10_000, 30_000];
+
+/** `incoming` added to `rows`, in id order, without duplicates. */
+function mergeRows(rows, incoming) {
+  const have = new Set(rows.map((r) => r.id));
+  const add = incoming.filter((r) => !have.has(r.id));
+  if (!add.length) return rows;
+  const next = rows.concat(add).sort((a, b) => a.id - b.id);
+  return next.length > MAX_LIVE_ROWS ? next.slice(next.length - MAX_LIVE_ROWS) : next;
+}
+/**
  * A search stops at a time budget on the server, so a rare match can need
  * several round trips to find a page of results. They are made without
  * asking, up to this many, before the "search older" button takes over.
@@ -273,7 +290,7 @@ export default function Requests({ ctx }) {
 
       {live ? (
         // Keyed on the filters: a change starts a fresh stream and history.
-        <LiveStream key={paramString} filters={active} />
+        <LiveStream key={paramString} filters={active} onUnauthorized={ctx?.onUnauthorized} />
       ) : (
         <SearchResults
           active={active}
@@ -329,9 +346,18 @@ async function findRequests(filters, { before = null, want = PAGE, count = false
 //  Live: the stream of new requests, with the stored ones above
 // ---------------------------------------------------------------------------
 
-function LiveStream({ filters }) {
+function LiveStream({ filters, onUnauthorized }) {
   const filtered = Object.keys(filters).length > 0;
   const [rows, setRows] = useState([]);
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  const unauthorizedRef = useRef(onUnauthorized);
+  unauthorizedRef.current = onUnauthorized;
+  // Reopens the stream at once (the banner's button); set by the stream effect.
+  const reconnectRef = useRef(() => {});
+  // Set when the stream came back after more was missed than one look could
+  // fetch, while paused: Resume then starts afresh from the newest.
+  const gapRef = useRef(null);
   const [paused, setPaused] = useState(false);
   const [state, setState] = useState('connecting');
   const [rate, setRate] = useState(0);
@@ -434,45 +460,186 @@ function LiveStream({ filters }) {
     }
   }
 
+  // The stream, kept open by hand. EventSource retries by itself only while
+  // the server has not refused it: a reconnect answered with an error (an
+  // ended session, a rate limit, too many streams) closes it for good. And a
+  // phone that sleeps or changes network can leave it closed without an
+  // error, or open but silent. So a stream that is closed, or quiet for
+  // STALE_MS, is reopened with growing waits while the page is in view, and
+  // coming back to the page reopens it at once. Each reopening fills in what
+  // arrived while it was down.
   useEffect(() => {
-    // The server applies the filters (makeFilter in web/stream.js).
-    const source = new EventSource(`/api/stream${qs(filters)}`);
-    setState('connecting');
+    let source = null;
+    let timer = null;
+    let attempt = 0;
+    let lastFrame = Date.now();
+    let opened = 0;
+    let disposed = false;
 
-    source.addEventListener('hello', () => setState('live'));
-    source.addEventListener('skipped', (evt) => {
-      // The server produced requests faster than the tail could carry them.
+    const heard = () => {
+      lastFrame = Date.now();
+    };
+
+    /** Stored requests newer than the newest shown, put in where they belong. */
+    async function catchUp(since) {
+      const collected = [];
+      let res;
       try {
-        setSkipped((n) => n + (JSON.parse(evt.data)?.count ?? 0));
+        res = await findRequests(filters, {
+          want: 200,
+          stillWanted: () => alive.current && !disposed,
+          onPage: (page) => collected.push(...(page.rows ?? [])),
+        });
       } catch {
-        /* ignore a malformed frame */
+        return; // the stream itself is back; missing a few is not worth a banner
       }
-    });
-    source.addEventListener('events', (evt) => {
-      let batch;
-      try {
-        batch = JSON.parse(evt.data);
-      } catch {
-        return;
-      }
-      if (!Array.isArray(batch) || !batch.length) return;
-
-      const now = Date.now();
-      rateWindow.current.push([now, batch.length]);
-      rateWindow.current = rateWindow.current.filter(([t]) => now - t < 10_000);
-      setRate(rateWindow.current.reduce((s, [, n]) => s + n, 0) / 10);
-
+      if (!res) return;
+      const missed = collected.filter((r) => r.id > since).reverse();
+      if (!missed.length) return;
+      // Joined up with what is shown, or nothing older exists: no hole.
+      const whole = missed.length < collected.length || res.nextCursor === null;
+      const cursor = { cursor: res.nextCursor ?? null, partway: Boolean(res.windowed && !res.pageFull), back: res.searchedBackTo };
+      const newestMissed = missed[missed.length - 1].id;
       if (pausedRef.current) {
-        pausedBuffer.current = pausedBuffer.current.concat(batch).slice(-MAX_LIVE_ROWS);
+        pausedBuffer.current = whole
+          ? mergeRows(pausedBuffer.current, missed)
+          : missed.concat(pausedBuffer.current.filter((r) => r.id > newestMissed));
+        if (!whole) gapRef.current = cursor;
         setPendingCount(pausedBuffer.current.length);
+      } else if (whole) {
+        setRows((prev) => mergeRows(prev, missed));
       } else {
-        appendRows(batch);
+        // Away too long to join up: start again from the newest, as on arrival.
+        jumpToNewest.current = true;
+        setRows((prev) => missed.concat(prev.filter((r) => r.id > newestMissed)));
+        setOlder(cursor);
       }
-    });
-    source.onopen = () => setState('live');
-    source.onerror = () => setState('reconnecting');
+    }
 
-    return () => source.close();
+    function open() {
+      clearTimeout(timer);
+      timer = null;
+      source?.close();
+      heard();
+      // The server applies the filters (makeFilter in web/stream.js).
+      const es = new EventSource(`/api/stream${qs(filters)}`);
+      source = es;
+
+      es.addEventListener('hello', () => {
+        heard();
+        attempt = 0;
+        setState('live');
+        if (opened++ > 0) {
+          const held = [rowsRef.current, pausedBuffer.current].map((list) => (list.length ? list[list.length - 1].id : 0));
+          const since = Math.max(...held);
+          if (since > 0) catchUp(since);
+        }
+      });
+      es.addEventListener('ping', heard);
+      es.addEventListener('skipped', (evt) => {
+        heard();
+        // The server produced requests faster than the tail could carry them.
+        try {
+          setSkipped((n) => n + (JSON.parse(evt.data)?.count ?? 0));
+        } catch {
+          /* ignore a malformed frame */
+        }
+      });
+      es.addEventListener('events', (evt) => {
+        heard();
+        let batch;
+        try {
+          batch = JSON.parse(evt.data);
+        } catch {
+          return;
+        }
+        if (!Array.isArray(batch) || !batch.length) return;
+
+        const now = Date.now();
+        rateWindow.current.push([now, batch.length]);
+        rateWindow.current = rateWindow.current.filter(([t]) => now - t < 10_000);
+        setRate(rateWindow.current.reduce((s, [, n]) => s + n, 0) / 10);
+
+        if (pausedRef.current) {
+          pausedBuffer.current = pausedBuffer.current.concat(batch).slice(-MAX_LIVE_ROWS);
+          setPendingCount(pausedBuffer.current.length);
+        } else {
+          appendRows(batch);
+        }
+      });
+      es.onerror = () => {
+        if (disposed || es !== source) return;
+        setState('reconnecting');
+        // Still CONNECTING means the browser is retrying by itself; the
+        // watchdog below steps in if that goes nowhere.
+        if (es.readyState === EventSource.CLOSED) retry();
+      };
+    }
+
+    /** Reopens the stream after a wait (or `delay`), unless one is pending. */
+    function retry(delay) {
+      source?.close();
+      if (disposed || timer) return;
+      const wait = delay ?? RETRY_MS[Math.min(attempt, RETRY_MS.length - 1)];
+      attempt++;
+      setState('reconnecting');
+      timer = setTimeout(async () => {
+        // A refused stream says nothing about why. An ended session is the
+        // usual reason, and the way back from that is the Sign in screen.
+        // Bounded: after a network change the browser can send this down a
+        // dead connection, and a check that never answers must not stop the
+        // stream from being reopened.
+        const abort = new AbortController();
+        const giveUp = setTimeout(() => abort.abort(), 5000);
+        try {
+          const me = await api.get('/api/auth/me', { signal: abort.signal });
+          if (!me?.authenticated) {
+            timer = null;
+            unauthorizedRef.current?.();
+            return;
+          }
+        } catch {
+          /* offline, the server is down, or no answer: try the stream anyway */
+        } finally {
+          clearTimeout(giveUp);
+        }
+        if (!disposed) open();
+      }, wait);
+    }
+
+    function reconnectNow() {
+      clearTimeout(timer);
+      timer = null;
+      attempt = 0;
+      retry(0);
+    }
+    reconnectRef.current = reconnectNow;
+
+    const stale = () => source?.readyState !== EventSource.OPEN || Date.now() - lastFrame > STALE_MS;
+    // Background tabs have their timers throttled, so this runs only in view;
+    // returning to the page is handled by onReturn.
+    const watchdog = setInterval(() => {
+      if (document.visibilityState === 'visible' && !timer && Date.now() - lastFrame > STALE_MS) retry();
+    }, 5000);
+    const onReturn = () => {
+      if (document.visibilityState === 'visible' && stale()) reconnectNow();
+    };
+    document.addEventListener('visibilitychange', onReturn);
+    window.addEventListener('pageshow', onReturn);
+    window.addEventListener('online', onReturn);
+
+    setState('connecting');
+    open();
+
+    return () => {
+      disposed = true;
+      clearTimeout(timer);
+      clearInterval(watchdog);
+      document.removeEventListener('visibilitychange', onReturn);
+      window.removeEventListener('pageshow', onReturn);
+      window.removeEventListener('online', onReturn);
+      source?.close();
+    };
   }, [filters, appendRows]);
 
   // Track whether the newest row is in view.
@@ -513,7 +680,15 @@ function LiveStream({ filters }) {
   }, [rows, paused]);
 
   function resume() {
-    if (pausedBuffer.current.length) {
+    if (gapRef.current) {
+      // The stream came back after missing more than it could fill in.
+      jumpToNewest.current = true;
+      setRows(pausedBuffer.current.slice(-MAX_LIVE_ROWS));
+      setOlder(gapRef.current);
+      gapRef.current = null;
+      pausedBuffer.current = [];
+      setPendingCount(0);
+    } else if (pausedBuffer.current.length) {
       appendRows(pausedBuffer.current);
       pausedBuffer.current = [];
       setPendingCount(0);
@@ -587,7 +762,10 @@ function LiveStream({ filters }) {
         <div style={{ padding: '0 12px' }}>
           <Banner level="warn">
             The stream dropped and is reconnecting. Requests that arrive meanwhile are still
-            stored — load them from above, or reload.
+            stored, and are filled in once it is back.{' '}
+            <button type="button" className="btn sm" onClick={() => reconnectRef.current()}>
+              Reconnect now
+            </button>
           </Banner>
         </div>
       )}

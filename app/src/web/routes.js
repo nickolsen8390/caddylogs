@@ -24,6 +24,11 @@ const log = logger('api');
 
 const DAY = 86_400_000;
 
+/** Longest a live stream goes without an event the page can see. */
+const STREAM_BEAT_MS = 10_000;
+/** Unsent output after which a live stream's reader is taken to be gone. */
+const STREAM_MAX_BUFFERED = 1024 * 1024;
+
 /** Dimensions the API is willing to expose, so `dim` can never reach SQL raw. */
 const DIMS = new Set([
   'status', 'method', 'path', 'ip', 'ua', 'browser', 'os', 'device',
@@ -59,6 +64,37 @@ function windowOf(q) {
   return { from: now - span, to: now };
 }
 
+/**
+ * Requests per second in a window: the mean, over the part of the window the
+ * totals cover (all of it, unless it starts before the stored requests; see
+ * Q.totals), and the busiest step of the series. Time before the first data
+ * is not counted, so a new install is not averaged against hours it was off.
+ */
+function requestRate(from, to, totals, previous, series) {
+  // The first hour's aggregates start on the hour; while the stored requests
+  // still reach back that far, they say when the first one really came.
+  const { events: ev, aggregates: ag } = Q.dataRange();
+  const firstData = (ev.from && (!ag.from || ev.from - ag.from < 3_600_000) ? ev.from : ag.from) ?? from;
+  const start = Math.max(totals.covered_from ?? from, firstData);
+  const count = totals.requests;
+  const end = Math.min(to, Date.now());
+  const secs = (end - start) / 1000;
+  // Each step over the time it really spans: the one under way, and the
+  // first after the data begins, are partly empty. Under half a step is too
+  // little to call a rate.
+  let peak = null;
+  for (const p of series.points) {
+    const covered = (Math.min((p.bucket + series.step) * 1000, end) - Math.max(p.bucket * 1000, firstData, from)) / 1000;
+    if (covered >= series.step / 2) peak = Math.max(peak ?? 0, p.requests / covered);
+  }
+  return {
+    mean: secs > 0 ? count / secs : 0,
+    previous: previous.requests / ((to - from) / 1000),
+    peak,
+    step: series.step,
+  };
+}
+
 const intParam = (v, d, max = 1000) => {
   const n = parseInt(v, 10);
   if (!Number.isFinite(n)) return d;
@@ -74,11 +110,15 @@ export async function registerApi(app) {
     const { from, to } = windowOf(req.query);
     const host = req.query.host || null;
     const prev = { from: from - (to - from), to: from };
+    const totals = Q.totals(from, to, host);
+    const previous = Q.totals(prev.from, prev.to, host);
+    const series = Q.series(from, to, host, intParam(req.query.step, null, 604800) || null);
     return {
       window: { from, to },
-      totals: Q.totals(from, to, host),
-      previous: Q.totals(prev.from, prev.to, host),
-      series: Q.series(from, to, host, intParam(req.query.step, null, 604800) || null),
+      totals,
+      previous,
+      rate: requestRate(from, to, totals, previous, series),
+      series,
       status: Q.topDim('status', from, to, { host, limit: 15, totals: false }).rows,
       topPaths: Q.topDim('path', from, to, { host, limit: 10, totals: false }).rows,
       topIps: Q.topDim('ip', from, to, { host, limit: 10, totals: false }).rows,
@@ -282,21 +322,37 @@ export async function registerApi(app) {
         res.write(chunk);
       } catch {
         cleanup();
+        return;
       }
+      // Nobody is reading: a phone that went away without closing the
+      // connection. Writes pile up until the OS gives up on it, which can take
+      // many minutes, holding one of the 32 places meanwhile.
+      if (res.writableLength > STREAM_MAX_BUFFERED) cleanup();
+    };
+
+    // The page cannot see comments, so when there is nothing to send it gets
+    // an event at least every STREAM_BEAT_MS, and can tell a quiet stream from
+    // a dead one (Requests.jsx). Comments between keep proxies from timing it out.
+    let lastEvent = Date.now();
+    const sendEvent = (chunk) => {
+      lastEvent = Date.now();
+      safeWrite(chunk);
+    };
+    const idle = () => {
+      if (Date.now() - lastEvent >= STREAM_BEAT_MS) sendEvent('event: ping\ndata: {}\n\n');
+      else safeWrite(': keep-alive\n\n');
     };
 
     const sub = {
       push(rows, skipped) {
         if (skipped > 0) {
-          safeWrite(`event: skipped\ndata: ${JSON.stringify({ count: skipped })}\n\n`);
+          sendEvent(`event: skipped\ndata: ${JSON.stringify({ count: skipped })}\n\n`);
         }
         const keep = rows.filter(filter);
-        if (!keep.length) return;
-        safeWrite(`event: events\ndata: ${JSON.stringify(keep)}\n\n`);
+        if (!keep.length) return idle();
+        sendEvent(`event: events\ndata: ${JSON.stringify(keep)}\n\n`);
       },
-      ping() {
-        safeWrite(': keep-alive\n\n');
-      },
+      ping: idle,
     };
 
     const unsubscribe = hub.subscribe(sub);

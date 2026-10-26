@@ -47,25 +47,44 @@ export class ProviderUnavailable extends Error {
   }
 }
 
-/** Simple token bucket so we never exceed the configured request rate. */
-class RateLimiter {
+/**
+ * Token bucket so we never exceed the configured request rate. Callers wait
+ * in two lanes: lookups for requests being stored now go first, ahead of the
+ * background queue, which would otherwise take every token while it works
+ * through a backlog and leave new requests waiting past their time budget.
+ */
+export class RateLimiter {
   constructor(perSec) {
     this.capacity = Math.max(1, perSec);
     this.tokens = this.capacity;
     this.perMs = this.capacity / 1000;
     this.last = Date.now();
+    this.lanes = [[], []]; // [urgent, background]
+    this.timer = null;
   }
-  async take() {
-    for (;;) {
-      const now = Date.now();
-      this.tokens = Math.min(this.capacity, this.tokens + (now - this.last) * this.perMs);
-      this.last = now;
-      if (this.tokens >= 1) {
-        this.tokens -= 1;
-        return;
-      }
-      const waitMs = Math.ceil((1 - this.tokens) / this.perMs);
-      await new Promise((r) => setTimeout(r, Math.max(5, waitMs)));
+  /** @param {boolean} [urgent] for a request being stored now */
+  take(urgent = false) {
+    return new Promise((resolve) => {
+      this.lanes[urgent ? 0 : 1].push(resolve);
+      this.pump();
+    });
+  }
+  pump() {
+    const now = Date.now();
+    this.tokens = Math.min(this.capacity, this.tokens + (now - this.last) * this.perMs);
+    this.last = now;
+    while (this.tokens >= 1) {
+      const next = this.lanes[0].shift() ?? this.lanes[1].shift();
+      if (!next) return;
+      this.tokens -= 1;
+      next();
+    }
+    if (!this.timer && (this.lanes[0].length || this.lanes[1].length)) {
+      const waitMs = Math.max(5, Math.ceil((1 - this.tokens) / this.perMs));
+      this.timer = setTimeout(() => {
+        this.timer = null;
+        this.pump();
+      }, waitMs);
     }
   }
 }
@@ -116,8 +135,8 @@ export function describeRequest(kind, value) {
  * @returns {Promise<object|null>} the parsed body, or null when the provider
  *   answered but has no data (400/404).
  */
-async function call(kind, value) {
-  await limiter.take();
+async function call(kind, value, urgent = false) {
+  await limiter.take(urgent);
 
   const { url, headers } = describeRequest(kind, value);
 
@@ -177,14 +196,15 @@ function toAsnNumber(v) {
 
 /**
  * IP -> prefix and originating ASN.
+ * @param {boolean} [urgent] for a request being stored now: ahead of the queue
  * @returns {Promise<object|null>} null when no BGP prefix covers the address
  *   (unrouted space, bogons, some anycast edge cases).
  */
-export async function lookupIp(ip) {
+export async function lookupIp(ip, urgent = false) {
   if (!config.notoolkit.enabled) return null;
   // Not an address (a malformed log field): nothing the API could answer.
   if (!net.isIP(String(ip))) return null;
-  const body = await call('ip', ip);
+  const body = await call('ip', ip, urgent);
   if (!body) return null;
 
   const asn = toAsnNumber(body.asn);

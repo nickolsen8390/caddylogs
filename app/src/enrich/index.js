@@ -9,11 +9,18 @@
 // Separately, each distinct ASN gets ONE asn/{number} lookup for registrant detail
 // (RIR, description, WHOIS, prefix counts). That set is bounded by the number
 // of networks that talk to the server, not by request volume.
+//
+// Addresses share lookups by block: no route more specific than an IPv4 /24
+// or an IPv6 /48 is carried on the internet, so every address in one block
+// has the same covering prefix and origin AS. One answer serves the block —
+// which matters for IPv6, where clients use a fresh address for almost every
+// connection. It is shared only when the prefix it names covers the whole
+// block; an answer naming a longer prefix is kept to its own address.
 
 import { getDb } from '../db.js';
 import { config } from '../config.js';
 import { logger } from '../util/log.js';
-import { isPrivateIp } from '../util/net.js';
+import { blockOf, isPrivateIp, prefixCoversBlock } from '../util/net.js';
 import { lookupCountry, lookupAsn as maxmindAsn, maxmindStatus } from './maxmind.js';
 import { lookupIp, lookupAsnDetail, NOTOOLKIT } from './notoolkit.js';
 
@@ -34,6 +41,11 @@ const EMPTY = Object.freeze({
 const mem = new Map(); // ip -> record (bounded)
 const MEM_MAX = 100_000;
 const inFlight = new Map(); // ip -> Promise
+const blockAnswers = new Map(); // block -> { nt, at } (bounded)
+const blockInFlight = new Map(); // block -> Promise of a notoolkit answer
+
+// Throughput, for the periodic log line while there is a backlog.
+const stats = { resolved: 0, lookups: 0, shared: 0, failed: 0 };
 
 let stmts = null;
 function prep() {
@@ -103,17 +115,62 @@ function prep() {
   return stmts;
 }
 
-function remember(ip, rec) {
-  if (mem.size >= MEM_MAX) {
-    // Cheap eviction: drop the oldest tenth rather than tracking access order.
-    let i = 0;
-    for (const k of mem.keys()) {
-      mem.delete(k);
-      if (++i > MEM_MAX / 10) break;
-    }
+/** Cheap eviction: drop the oldest tenth rather than tracking access order. */
+function makeRoom(map) {
+  if (map.size < MEM_MAX) return;
+  let i = 0;
+  for (const k of map.keys()) {
+    map.delete(k);
+    if (++i > MEM_MAX / 10) break;
   }
+}
+
+function remember(ip, rec) {
+  makeRoom(mem);
   mem.set(ip, rec);
   return rec;
+}
+
+/** Whether an answer can stand for every address in the block of `ip`. */
+const coversBlock = (nt, ip) => Boolean(nt) && prefixCoversBlock(nt.as_prefix, ip);
+
+/**
+ * notoolkit's answer for `ip`, from another address in its block when one is
+ * known or being looked up, otherwise from the API.
+ */
+async function lookupShared(ip, urgent) {
+  const block = blockOf(ip);
+  if (!block) return lookupIp(ip, urgent);
+
+  const known = blockAnswers.get(block);
+  if (known && Date.now() - known.at < config.enrich.ttlDays * 86_400_000) {
+    stats.shared += 1;
+    return known.nt;
+  }
+  const running = blockInFlight.get(block);
+  if (running) {
+    const nt = await running.catch(() => null);
+    if (nt && coversBlock(nt, ip)) {
+      stats.shared += 1;
+      return nt;
+    }
+    stats.lookups += 1;
+    return lookupIp(ip, urgent);
+  }
+
+  stats.lookups += 1;
+  const p = lookupIp(ip, urgent);
+  blockInFlight.set(block, p);
+  try {
+    const nt = await p;
+    if (nt && coversBlock(nt, ip)) {
+      makeRoom(blockAnswers);
+      blockAnswers.set(block, { nt, at: Date.now() });
+    }
+    return nt;
+  } finally {
+    blockInFlight.delete(block);
+  }
 }
 
 function isFresh(row) {
@@ -157,7 +214,7 @@ function localOnly(ip) {
 }
 
 /** Full resolution for one IP, including the remote call. */
-async function resolveOne(ip) {
+async function resolveOne(ip, urgent = false) {
   const existing = inFlight.get(ip);
   if (existing) return existing;
 
@@ -172,7 +229,7 @@ async function resolveOne(ip) {
     }
 
     try {
-      const nt = await lookupIp(ip);
+      const nt = await lookupShared(ip, urgent);
       const rec = nt
         ? {
             ...base,
@@ -201,10 +258,12 @@ async function resolveOne(ip) {
         });
       }
       s.drop.run(ip);
+      stats.resolved += 1;
       return remember(ip, rec);
     } catch (err) {
       // Transient failure. Keep whatever MaxMind gave us, record the error,
       // and leave the IP queued so the worker retries with backoff.
+      stats.failed += 1;
       const rec = { ...base, source: base.asn ? 'maxmind-fallback' : null };
       persist(ip, rec, err?.message ?? err);
       s.enqueue.run(ip, Date.now() + 60_000);
@@ -266,7 +325,7 @@ export async function resolveMany(ips, timeoutMs = config.enrich.inlineTimeoutMs
       while (queue.length && Date.now() < deadline) {
         const ip = queue.shift();
         try {
-          const rec = await resolveOne(ip);
+          const rec = await resolveOne(ip, true);
           if (rec) out.set(ip, rec);
         } catch {
           // Already persisted with the local answer and re-queued by
@@ -292,39 +351,91 @@ export async function resolveMany(ips, timeoutMs = config.enrich.inlineTimeoutMs
 // ---------------------------------------------------------------------------
 
 let workerTimer = null;
+let workerRunning = false;
+/** Longest the queue is drained before ASN detail gets a turn. */
+const DRAIN_SLICE_MS = 30_000;
 
-async function drainIpQueue() {
+/**
+ * Works through the due part of the queue with NOTOOLKIT_CONCURRENCY lookups
+ * in flight at all times, refilling from the table as they finish — so the
+ * rate limiter (NOTOOLKIT_RATE_PER_SEC), not the polling, sets the pace.
+ * @returns {number} addresses handled
+ */
+async function drainIpQueue(until) {
   const s = prep();
-  const batch = s.dequeue.all(Date.now(), 50);
-  if (!batch.length) return;
+  const concurrency = Math.max(1, config.notoolkit.concurrency);
+  const want = Math.max(50, concurrency * 4);
+  const pending = [];
+  // Rows being looked up are still in the table until they resolve; this
+  // keeps a refill from handing them out twice.
+  const claimed = new Set();
+  let handled = 0;
 
-  const queue = [...batch];
-  const runners = Array.from(
-    { length: Math.min(config.notoolkit.concurrency, queue.length) },
-    async () => {
-      while (queue.length) {
-        const row = queue.shift();
-        try {
-          await resolveOne(row.ip);
-          // resolveOne removes the row on success.
-        } catch (err) {
-          const attempts = row.attempts + 1;
-          if (attempts >= config.notoolkit.maxRetries) {
-            s.drop.run(row.ip); // give up; the TTL sweep retries much later
-          } else {
-            const backoff = Math.min(3_600_000, 60_000 * 2 ** attempts);
-            s.retry.run(
-              attempts,
-              Date.now() + backoff,
-              String(err?.message ?? err).slice(0, 300),
-              row.ip
-            );
-          }
+  const refill = () => {
+    if (!workerRunning || Date.now() >= until) return;
+    for (const row of s.dequeue.all(Date.now(), want + claimed.size)) {
+      if (claimed.has(row.ip)) continue;
+      claimed.add(row.ip);
+      pending.push(row);
+    }
+  };
+
+  const runner = async () => {
+    for (;;) {
+      if (!pending.length) refill();
+      const row = pending.shift();
+      if (!row) return;
+      try {
+        await resolveOne(row.ip);
+        // resolveOne removes the row on success.
+      } catch (err) {
+        const attempts = row.attempts + 1;
+        if (attempts >= config.notoolkit.maxRetries) {
+          s.drop.run(row.ip); // give up; the TTL sweep retries much later
+        } else {
+          const backoff = Math.min(3_600_000, 60_000 * 2 ** attempts);
+          s.retry.run(
+            attempts,
+            Date.now() + backoff,
+            String(err?.message ?? err).slice(0, 300),
+            row.ip
+          );
         }
+      } finally {
+        claimed.delete(row.ip);
+        handled += 1;
       }
     }
-  );
-  await Promise.all(runners);
+  };
+
+  refill();
+  await Promise.all(Array.from({ length: Math.min(concurrency, pending.length) }, runner));
+  return handled;
+}
+
+let lastReport = Date.now();
+/** A line a minute while there is a backlog, so its progress can be followed. */
+function report() {
+  const now = Date.now();
+  if (now - lastReport < 60_000) return;
+  const secs = (now - lastReport) / 1000;
+  lastReport = now;
+  const done = { ...stats };
+  for (const k of Object.keys(stats)) stats[k] = 0;
+  if (!done.resolved && !done.failed) return;
+  let queued = 0;
+  try {
+    queued = prep().queueDepth.get().n;
+  } catch {
+    /* only for the log line */
+  }
+  log.info('enrichment progress', {
+    resolvedPerSec: Math.round((done.resolved / secs) * 10) / 10,
+    lookupsPerSec: Math.round((done.lookups / secs) * 10) / 10,
+    sharedInBlock: done.shared,
+    failed: done.failed,
+    queued,
+  });
 }
 
 async function fillAsnDetail() {
@@ -361,7 +472,7 @@ async function fillAsnDetail() {
 }
 
 export function startEnrichWorker() {
-  if (workerTimer) return;
+  if (workerRunning) return;
   if (!config.notoolkit.enabled) {
     // Both jobs below are notoolkit retries and lookups. Drop whatever was
     // queued while it was switched on: without it those addresses can only
@@ -374,20 +485,27 @@ export function startEnrichWorker() {
     }
     return;
   }
+  // One pass at a time: straight on to the next while there is a backlog,
+  // otherwise a look every 5 seconds.
+  workerRunning = true;
   const tick = async () => {
+    workerTimer = null;
+    let handled = 0;
     try {
-      await drainIpQueue();
+      handled = await drainIpQueue(Date.now() + DRAIN_SLICE_MS);
       await fillAsnDetail();
+      report();
     } catch (err) {
       log.error('enrichment worker failed', { err: String(err) });
     }
+    if (workerRunning) workerTimer = setTimeout(() => void tick(), handled ? 0 : 5000);
   };
-  workerTimer = setInterval(() => void tick(), 5000);
   void tick();
 }
 
 export function stopEnrichWorker() {
-  clearInterval(workerTimer);
+  workerRunning = false;
+  clearTimeout(workerTimer);
   workerTimer = null;
 }
 

@@ -50,10 +50,13 @@ export class Tailer {
    * @param {string} opts.dir              directory to watch (read-only mount)
    * @param {string} opts.glob             comma-separated globs
    * @param {(lines:string[], meta:object)=>Promise<void>|void} opts.onLines
+   * @param {(cp:object)=>void} [opts.onCheckpoint] takes each read position
+   *   instead of it being saved at once, so the caller can save it with the
+   *   lines read up to it (saveCheckpoint) — see Ingestor.flush
    * @param {boolean} [opts.backfill]      read pre-existing files from the start
    * @param {number}  [opts.backfillMaxDays] ignore files older than this
    */
-  constructor({ dir, glob, onLines, backfill = true, backfillMaxDays = 0, pollMs = 250, scanMs = 3000 }) {
+  constructor({ dir, glob, onLines, onCheckpoint = null, backfill = true, backfillMaxDays = 0, pollMs = 250, scanMs = 3000 }) {
     this.dir = dir;
     this.patterns = String(glob)
       .split(',')
@@ -61,6 +64,7 @@ export class Tailer {
       .filter(Boolean)
       .map(globToRegExp);
     this.onLines = onLines;
+    this.onCheckpoint = onCheckpoint;
     this.backfill = backfill;
     this.backfillMaxDays = backfillMaxDays;
     this.pollMs = pollMs;
@@ -217,13 +221,17 @@ export class Tailer {
     // The offset we persist excludes any held-back partial line, so a crash
     // mid-line re-reads that line rather than losing or splitting it.
     const durable = state.offset - state.leftover.length;
-    this.qSave.run({
-      inode: key,
-      path: state.path,
-      offset: durable,
-      size,
-      now: Date.now(),
-    });
+    const cp = { inode: key, path: state.path, offset: durable, size, now: Date.now() };
+    // The lines read up to here may not be stored yet: the ingester batches
+    // them. Saving the position now would let a crash skip them for good, so
+    // it goes to the ingester, which saves it in the same transaction.
+    if (this.onCheckpoint) this.onCheckpoint(cp);
+    else this.saveCheckpoint(cp);
+  }
+
+  /** Persists a read position from checkpoint(); may run inside a transaction. */
+  saveCheckpoint(cp) {
+    this.qSave.run(cp);
   }
 
   async tick() {

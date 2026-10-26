@@ -20,6 +20,7 @@ import { getDb } from './db.js';
 import { config } from './config.js';
 import { isPrivateIp } from './util/net.js';
 import { PAGEVIEW_SQL } from './ingest/traffic.js';
+import { VISIT_KEEP_MS } from './ingest/visits.js';
 import { readRaw } from './util/rawlog.js';
 import { retentionInfo } from './settings.js';
 
@@ -50,6 +51,12 @@ function scope(fromMs, toMs, host, extra) {
   return p;
 }
 
+/** Of `values`, only the names `sql` binds (better-sqlite3 rejects the rest). */
+function bindFor(sql, values) {
+  const used = new Set([...sql.matchAll(/@(\w+)/g)].map((m) => m[1]));
+  return Object.fromEntries(Object.entries(values).filter(([k]) => used.has(k)));
+}
+
 /** LIKE pattern with SQLite wildcards and the escape character neutralised. */
 function likePattern(search) {
   if (!search) return null;
@@ -60,9 +67,123 @@ function likePattern(search) {
 //  Headline numbers
 // ---------------------------------------------------------------------------
 
+/**
+ * How totals() covers a window. Whole hours come from the hourly rollup.
+ * The part-hours at either end come from the stored requests, while those
+ * still reach them and the hour has not been folded into a day; otherwise
+ * they are rounded as before — the leading part-hour left out, the trailing
+ * one counted whole. The trailing part-hour of a window ending now is then
+ * exact, requests not yet rolled up included.
+ */
+function coverage(fromMs, toMs) {
+  const db = getDb();
+  const oldest = oldestRetainedEvent();
+  const hourly = db.prepare("SELECT MIN(bucket) AS b FROM rollup WHERE gran = 'h'").get().b;
+  const floorH = (t) => Math.floor(t / HOUR_MS) * HOUR_MS;
+  const fromEvents = ([a, b]) =>
+    oldest !== null && b > oldest && (hourly === null || floorH(a) >= hourly * 1000);
+
+  const firstHour = Math.ceil(fromMs / HOUR_MS) * HOUR_MS;
+  const lastHour = floorH(toMs);
+  const edges = [];
+  let hours = null;
+  if (firstHour >= lastHour) {
+    // Within one hour, or across a single boundary with no whole hour.
+    if (firstHour > fromMs && firstHour < toMs) edges.push([fromMs, firstHour], [firstHour, toMs]);
+    else if (fromMs < toMs) edges.push([fromMs, toMs]);
+  } else {
+    hours = [firstHour, lastHour];
+    if (fromMs < firstHour) edges.push([fromMs, firstHour]);
+    if (lastHour < toMs) edges.push([lastHour, toMs]);
+  }
+
+  const exact = [];
+  let from = fromMs;
+  for (const edge of edges) {
+    if (fromEvents(edge)) exact.push(edge);
+    else if (edge[0] === floorH(edge[0])) {
+      // A trailing part-hour: its hour, whole, as before.
+      hours = hours ? [hours[0], edge[0] + HOUR_MS] : [edge[0], edge[0] + HOUR_MS];
+    } else if (edge[0] === fromMs) {
+      from = edge[1]; // a leading part-hour, left out
+    }
+  }
+  return { hours, edges: exact, from };
+}
+
+/** Bind object and condition for the hours and folded days in `cov`. */
+function hourScope(cov, fromMs, toMs, host) {
+  const p = scope(fromMs, toMs, host);
+  p.hFrom = cov.hours ? cov.hours[0] / 1000 : 0;
+  p.hTo = cov.hours ? cov.hours[1] / 1000 : 0;
+  const where =
+    `((gran = 'h' AND bucket >= @hFrom AND bucket < @hTo) OR (gran = 'd' AND bucket >= @from AND bucket < @to)) ` +
+    hostClause(host);
+  return { p, where };
+}
+
+/** The `events` condition for the part-hours in `cov`, with its bind values. */
+function edgeScope(cov, host) {
+  const p = {};
+  if (host) p.host = host;
+  if (!cov.edges.length) return { p, where: '0' };
+  const parts = cov.edges.map(([a, b], i) => {
+    p[`a${i}`] = a;
+    p[`b${i}`] = b;
+    return `(ts >= @a${i} AND ts < @b${i})`;
+  });
+  return { p, where: `(${parts.join(' OR ')}) ${hostClause(host)}` };
+}
+
+/**
+ * Visits, bounces and visit time for visits started in the part-hours. From
+ * the visits themselves while they are kept (about a day); before that, the
+ * hour's counts in proportion to the part of it in the window.
+ */
+function edgeVisits(cov, host) {
+  const db = getDb();
+  const out = { visits: 0, bounces: 0, visit_ms: 0 };
+  // A visit stays a while after it last changed, which is never before it
+  // started; an hour's margin covers maintenance running late.
+  const kept = Date.now() - VISIT_KEEP_MS + HOUR_MS;
+  for (const [a, b] of cov.edges) {
+    let row;
+    if (a >= kept) {
+      row = db
+        .prepare(
+          `SELECT COUNT(*) AS visits, COALESCE(SUM(pageviews = 1),0) AS bounces,
+                  COALESCE(SUM(MAX(0, end_ts - start_ts)),0) AS visit_ms
+             FROM visits WHERE start_ts >= @a AND start_ts < @b ${hostClause(host)}`
+        )
+        .get(host ? { a, b, host } : { a, b });
+    } else {
+      const bucket = Math.floor(a / HOUR_MS) * 3600;
+      const share = (b - a) / HOUR_MS;
+      const hour = db
+        .prepare(
+          `SELECT COALESCE(SUM(visits),0) AS visits, COALESCE(SUM(bounces),0) AS bounces,
+                  COALESCE(SUM(visit_ms),0) AS visit_ms
+             FROM rollup WHERE gran = 'h' AND bucket = @bucket ${hostClause(host)}`
+        )
+        .get(host ? { bucket, host } : { bucket });
+      row = {
+        visits: Math.round(hour.visits * share),
+        bounces: Math.round(hour.bounces * share),
+        visit_ms: Math.round(hour.visit_ms * share),
+      };
+    }
+    out.visits += row.visits;
+    out.bounces += row.bounces;
+    out.visit_ms += row.visit_ms;
+  }
+  return out;
+}
+
 export function totals(fromMs, toMs, host = null) {
   const db = getDb();
-  const params = scope(fromMs, toMs, host);
+  const cov = coverage(fromMs, toMs);
+  const hs = hourScope(cov, fromMs, toMs, host);
+  const es = edgeScope(cov, host);
 
   const row = db
     .prepare(
@@ -77,25 +198,70 @@ export function totals(fromMs, toMs, host = null) {
               COALESCE(SUM(pageviews),0) AS pageviews,
               COALESCE(SUM(visits),0) AS visits,
               COALESCE(SUM(CASE WHEN gran = 'd' THEN visitors ELSE 0 END),0) AS visitors,
-              COALESCE(SUM(bounces),0) AS bounces, COALESCE(SUM(visit_ms),0) AS visit_ms,
-              COUNT(DISTINCT host) AS hosts
+              COALESCE(SUM(bounces),0) AS bounces, COALESCE(SUM(visit_ms),0) AS visit_ms
          FROM rollup
-        WHERE bucket >= @from AND bucket < @to ${hostClause(host)}`
+        WHERE ${hs.where}`
     )
-    .get(params);
-  row.visitors += seenVisitors(params, host).reduce((n, r) => n + r.visitors, 0);
+    .get(hs.p);
 
-  const uniq = db
-    .prepare(
-      `SELECT COUNT(DISTINCT value) AS n FROM dims
-        WHERE gran IN ('h', 'd') AND dim = 'ip' AND bucket >= @from AND bucket < @to ${hostClause(host)}`
-    )
-    .get(params);
+  if (cov.edges.length) {
+    // The same counters as rollup.js's Accumulator.bump(), from the requests.
+    const e = db
+      .prepare(
+        `SELECT COUNT(*) AS requests,
+                COALESCE(SUM(bytes_out),0) AS bytes_out, COALESCE(SUM(bytes_in),0) AS bytes_in,
+                COALESCE(SUM(dur_ms),0) AS dur_sum, COALESCE(MAX(dur_ms),0) AS dur_max,
+                COALESCE(SUM(status / 100 = 1),0) AS c1xx, COALESCE(SUM(status / 100 = 2),0) AS c2xx,
+                COALESCE(SUM(status / 100 = 3),0) AS c3xx, COALESCE(SUM(status / 100 = 4),0) AS c4xx,
+                COALESCE(SUM(status / 100 = 5),0) AS c5xx, COALESCE(SUM(bot != 0),0) AS bots,
+                COALESCE(SUM(${PAGEVIEW_SQL}),0) AS pageviews
+           FROM events WHERE ${es.where}`
+      )
+      .get(es.p);
+    for (const k of Object.keys(e)) {
+      if (k === 'dur_max') row.dur_max = Math.max(row.dur_max, e.dur_max);
+      else row[k] += e[k];
+    }
+    const v = edgeVisits(cov, host);
+    row.visits += v.visits;
+    row.bounces += v.bounces;
+    row.visit_ms += v.visit_ms;
+  }
+
+  // Distinct counts across the hours and the part-hours together. These
+  // combine both scopes, so each is bound with just the names it uses.
+  const both = { ...hs.p, ...es.p };
+  const count = (sql) => db.prepare(sql).get(bindFor(sql, both)).n;
+  row.hosts = count(
+    `SELECT COUNT(*) AS n FROM (
+       SELECT host FROM rollup WHERE ${hs.where}
+       UNION SELECT host FROM events WHERE ${es.where})`
+  );
+  // Visitors: exact per hour from visitor_seen, and from the page views'
+  // visitor ids in the part-hours; folded days add their own (see seenVisitors).
+  row.visitors += count(
+    `SELECT COUNT(*) AS n FROM (
+       SELECT visitor FROM visitor_seen WHERE bucket >= @hFrom AND bucket < @hTo ${hostClause(host)}
+       UNION SELECT visitor FROM events WHERE ${es.where} AND visitor IS NOT NULL)`
+  );
+  // One select per granularity, so each can use the dims indexes (see the
+  // note at the top of this file).
+  const uniqueIps = count(
+    `SELECT COUNT(*) AS n FROM (
+       SELECT value FROM dims
+        WHERE gran = 'h' AND dim = 'ip' AND bucket >= @hFrom AND bucket < @hTo ${hostClause(host)}
+       UNION SELECT value FROM dims
+        WHERE gran = 'd' AND dim = 'ip' AND bucket >= @from AND bucket < @to ${hostClause(host)}
+       UNION SELECT ip FROM events WHERE ${es.where} AND ip IS NOT NULL AND ip != '')`
+  );
 
   const ok = row.c2xx + row.c3xx;
   return {
     ...row,
-    unique_ips: uniq.n,
+    // Where the counts start: later than `fromMs` only when the leading
+    // part-hour is older than the stored requests (see coverage()).
+    covered_from: cov.from,
+    unique_ips: uniqueIps,
     avg_ms: row.requests ? row.dur_sum / row.requests : 0,
     success_rate: row.requests ? ok / row.requests : 0,
     error_rate: row.requests ? (row.c4xx + row.c5xx) / row.requests : 0,

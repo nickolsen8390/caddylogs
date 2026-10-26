@@ -17,6 +17,11 @@ import crypto from 'node:crypto';
 import { getDb } from '../db.js';
 
 export const VISIT_GAP_MS = 30 * 60_000;
+/**
+ * How long a visit's row is kept after it last changed (maintenance.js), so
+ * every visit that started more recently than this is still in the table.
+ */
+export const VISIT_KEEP_MS = 26 * 3_600_000;
 const DAY_MS = 86_400_000;
 export const SALT_PREFIX = 'visitor_salt:';
 
