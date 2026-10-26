@@ -647,6 +647,22 @@ session cookie is seen to come back — otherwise `login-failed` says why
 (status 200 in that case: the password was right). The password is never
 logged.
 
+### Installing as an app
+
+Served over HTTPS, the interface can be installed as an app (a PWA): in
+Chrome or Edge with the install icon in the address bar, on Android from the
+browser menu, on iOS with Share → Add to Home Screen. It opens in its own
+window, with shortcuts to Requests, Traffic and Clients. Browsers allow this
+only over HTTPS (or on `localhost`); over plain HTTP the interface works as
+before and is simply not installable.
+
+Its service worker keeps only the UI's own files, so the app opens quickly,
+and shows an offline page when the server cannot be reached. It never stores
+API responses: statistics, requests and sessions always come from the
+server, and signing out means what it always has. A new release replaces the
+service worker on the next load. On iOS an installed app keeps its own
+cookies, so it asks you to sign in once, separately from Safari.
+
 ## 8. Configuration reference
 
 Every setting is documented inline in `.env.example`. The ones you are most

@@ -268,10 +268,19 @@ export async function buildServer() {
   await app.register(fastifyStatic, {
     root: config.publicDir,
     index: ['index.html'],
-    // Hashed asset filenames may be cached hard; index.html must not be.
+    // Off, so the Cache-Control set below is the one sent: with it on (the
+    // default), the plugin wrote `public, max-age=0` over every file.
+    cacheControl: false,
+    // Hashed asset filenames (assets/) may be cached hard; index.html must
+    // not be. The service worker and the manifest are checked on every load,
+    // so a new release reaches installed apps; the other files at the root
+    // (icons, the offline page) keep their names across releases, so a day.
     setHeaders(res, filePath) {
-      if (filePath.endsWith('index.html')) res.setHeader('Cache-Control', 'no-store');
-      else res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      const name = path.basename(filePath);
+      if (name === 'index.html') res.setHeader('Cache-Control', 'no-store');
+      else if (name === 'sw.js' || name === 'manifest.webmanifest') res.setHeader('Cache-Control', 'no-cache');
+      else if (/[\\/]assets[\\/]/.test(filePath)) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      else res.setHeader('Cache-Control', 'public, max-age=86400');
     },
   });
 

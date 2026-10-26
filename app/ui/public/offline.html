@@ -1,0 +1,42 @@
+<!doctype html>
+<!-- Shown by the service worker (sw.js) when a page cannot be loaded because
+     the server is unreachable. No script: the app's CSP allows none inline,
+     and a plain link back is all it needs. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#0d1117">
+  <title>Caddy Log Interface — offline</title>
+  <link rel="icon" href="/icon.svg">
+  <style>
+    :root { color-scheme: dark light; --bg: #0d1117; --panel: #161d27; --text: #e6edf3; --dim: #8b949e; --accent: #2dd4a7; }
+    @media (prefers-color-scheme: light) {
+      :root { --bg: #f6f8fa; --panel: #ffffff; --text: #1f2328; --dim: #59636e; --accent: #0f9b74; }
+    }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+      font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    main { min-height: 100%; display: grid; place-items: center; padding: 16px; box-sizing: border-box; }
+    .card { background: var(--panel); border: 1px solid #8884; border-radius: 12px; padding: 28px;
+      max-width: 380px; width: 100%; box-sizing: border-box; text-align: center; }
+    img { width: 56px; height: 56px; }
+    h1 { font-size: 18px; margin: 14px 0 6px; }
+    p { color: var(--dim); margin: 0 0 18px; }
+    a { display: inline-block; padding: 8px 18px; border-radius: 8px; background: var(--accent);
+      color: #062a20; font-weight: 600; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="card">
+      <img src="/icon.svg" alt="">
+      <h1>Can't reach Caddy Log Interface</h1>
+      <p>This device is offline, or the server isn't answering. Statistics and requests are only
+        on the server, so there is nothing to show until it's back.</p>
+      <!-- An empty href reloads this same address: the page that was wanted. -->
+      <a href="">Try again</a>
+    </div>
+  </main>
+</body>
+</html>

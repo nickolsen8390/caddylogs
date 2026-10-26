@@ -59,6 +59,8 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
+    // The installed app's title bar follows the theme (the page background).
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'light' ? '#f6f8fa' : '#0d1117');
   }, [theme]);
 
   // Embedding (lib/embed.js): the allowed origins arrive with /api/auth/me,

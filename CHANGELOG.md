@@ -4,6 +4,29 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org): a new major version (2.0.0) is the
 only kind that can require you to change anything when upgrading.
 
+## [1.6.0] — 2026-10-26
+
+### Added
+
+- **Installable as an app (PWA).** Over HTTPS, browsers offer to install the
+  interface (Chrome and Edge: the install icon in the address bar; iOS
+  Safari: Share → Add to Home Screen). It then opens in its own window, with
+  app shortcuts to Requests, Traffic and Clients.
+  - A web app manifest and icons, including a maskable icon for Android and
+    an Apple touch icon; the favicon is now a file rather than inline.
+  - A service worker that keeps the hashed UI files, so the app opens fast,
+    and shows an "offline" page when the server cannot be reached. It never
+    stores API responses: statistics, requests and sessions always come
+    from the server. Each release replaces it on the next load.
+  - The title bar of the installed app follows the light or dark theme.
+
+### Fixed
+
+- Cache headers on the UI were never applied: every file, `index.html`
+  included, was sent `Cache-Control: public, max-age=0`. The hashed files in
+  `assets/` are now cached for a year, `index.html` is `no-store`, the
+  service worker and manifest are revalidated on every load, and the other
+  files (icons, the offline page) are cached for a day.
 ## [1.5.0] — 2026-10-24
 
 ### Added
@@ -364,6 +387,7 @@ First public release.
   filesystem, no Linux capabilities and `no-new-privileges`.
 - Works on phones: slide-in menu, readable request lists, folding filters.
 
+[1.6.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.6.0
 [1.5.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.5.0
 [1.4.2]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.4.2
 [1.4.1]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.4.1
