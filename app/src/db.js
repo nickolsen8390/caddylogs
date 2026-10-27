@@ -10,6 +10,10 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 
 let db = null;
 
+const BUSY_TIMEOUT_MS = 10_000;
+/** The write-ahead log is emptied once it passes this, and cut back to it. */
+const WAL_LIMIT = 64 * 1_048_576;
+
 /**
  * Bind mounts keep the host's ownership, so a mismatch between the container
  * UID and the directory owner is the most likely first-run failure. Check it
@@ -57,11 +61,14 @@ export function getDb() {
   // WAL lets the ingest writer and the web reader run concurrently.
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');
-  db.pragma('busy_timeout = 10000');
+  db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
   db.pragma('foreign_keys = ON');
   db.pragma('temp_store = MEMORY');
   db.pragma('cache_size = -65536'); // ~64 MiB page cache
   db.pragma('mmap_size = 268435456');
+  // After a checkpoint resets the log, cut the file back to this size: without
+  // it the WAL file stays as large as it ever grew.
+  db.pragma(`journal_size_limit = ${WAL_LIMIT}`);
 
   const schema = fs.readFileSync(path.join(here, 'schema.sql'), 'utf8');
   db.exec(schema);
@@ -204,6 +211,90 @@ export function fileBytes() {
     }
   }
   return total;
+}
+
+/** Size of the write-ahead log, in bytes. */
+export function walBytes() {
+  try {
+    return fs.statSync(`${config.dbPath}-wal`).size;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Write the whole write-ahead log into the database and empty it, waiting up
+ * to `waitMs` for the ingester's current write and for other readers. Returns
+ * false when that wait ran out, and nothing was emptied.
+ */
+export function checkpointWal({ waitMs }) {
+  const handle = getDb();
+  handle.pragma(`busy_timeout = ${waitMs}`);
+  try {
+    return handle.pragma('wal_checkpoint(TRUNCATE)')[0].busy === 0;
+  } finally {
+    handle.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
+  }
+}
+
+let walTimer = null;
+let walWarned = 0;
+
+/**
+ * Keep the write-ahead log small. For the web process.
+ *
+ * SQLite folds the log back into the database as it goes, but can only start
+ * it again from the beginning at a moment when no reader still uses an older
+ * snapshot. With the ingester committing every second and the web side
+ * running query after query, that moment never comes on a busy server: the
+ * log grows without limit (14 GB in a day has been seen), and every read gets
+ * slower the longer it is. The web process is the one holding those
+ * snapshots, so it empties the log itself, between requests, when it is
+ * holding none.
+ */
+export function startWalGuard() {
+  if (walTimer) return;
+  walTimer = setInterval(() => {
+    const before = walBytes();
+    if (before <= WAL_LIMIT) return;
+    const started = Date.now();
+    let done = false;
+    try {
+      done = checkpointWal({ waitMs: 2000 });
+    } catch (err) {
+      log.warn('could not empty the write-ahead log', { err: String(err) });
+    }
+    if (done) {
+      log.debug('emptied the write-ahead log', { mb: Math.round(before / 1_048_576), ms: Date.now() - started });
+    } else if (before > 16 * WAL_LIMIT && Date.now() - walWarned > 600_000) {
+      walWarned = Date.now();
+      log.warn('the write-ahead log keeps growing: the ingester holds the database for seconds at a time', {
+        mb: Math.round(before / 1_048_576),
+      });
+    }
+  }, 5_000);
+  walTimer.unref();
+}
+
+/**
+ * At startup, before anything else uses the database: fold in a log left
+ * large by an earlier version. Takes minutes for a log of many gigabytes.
+ */
+export function foldLargeWal() {
+  const before = walBytes();
+  if (before <= WAL_LIMIT) return;
+  log.info('writing a large write-ahead log into the database', { mb: Math.round(before / 1_048_576) });
+  const started = Date.now();
+  try {
+    const done = checkpointWal({ waitMs: 10_000 });
+    log.info(done ? 'write-ahead log emptied' : 'write-ahead log still in use; it is emptied later', {
+      mb: Math.round(walBytes() / 1_048_576),
+      seconds: Math.round((Date.now() - started) / 1000),
+    });
+  } catch (err) {
+    // A full disk, most likely: the log is kept, and nothing in it is lost.
+    log.error('could not write the write-ahead log into the database', { err: String(err) });
+  }
 }
 
 /** Wrap a function in an IMMEDIATE transaction (write lock taken up front). */

@@ -235,6 +235,7 @@ const SIZE_CHUNK = 20_000; // stored requests deleted per step
 const KEEP_REQUESTS_MS = 3_600_000; // never below the last hour of requests
 const KEEP_AGGREGATES_DAYS = 7; // nor the last week of statistics
 let warnedTooSmall = 0;
+let warnedBehind = 0;
 
 /**
  * Hold the database under the size limit from the Settings page, whatever
@@ -260,12 +261,24 @@ export function enforceSizeLimit(db, { budgetMs = 30_000 } = {}) {
     `DELETE FROM events WHERE id IN (
        SELECT id FROM events WHERE rolled = 1 AND ts < ? ORDER BY id LIMIT ${SIZE_CHUNK})`
   );
+  const rollupBehind = db.prepare('SELECT 1 FROM events WHERE rolled = 0 AND ts < ? LIMIT 1');
 
   while (used > target && Date.now() - started < budgetMs) {
     const n = oldestRequests.run(Date.now() - KEEP_REQUESTS_MS).changes;
     if (n) {
       out.requests += n;
       dropOrphanedRaw(db);
+    } else if (rollupBehind.get(Date.now() - KEEP_REQUESTS_MS)) {
+      // Older requests are there, but not counted yet: they go once they
+      // are. Taking days of statistics instead would lose them for nothing.
+      if (Date.now() - warnedBehind > 3_600_000) {
+        warnedBehind = Date.now();
+        log.warn('over the database size limit, but the oldest requests are not counted into the statistics yet', {
+          limitMb: Math.round(limit / 1_048_576),
+          usedMb: Math.round(used / 1_048_576),
+        });
+      }
+      break;
     } else {
       // Requests are down to their last hour: the oldest day of statistics.
       const oldest = db.prepare('SELECT MIN(bucket) AS b FROM rollup').get().b;
@@ -367,22 +380,34 @@ export function runMaintenance() {
 
 /**
  * Between full runs: keep exploding dimensions trimmed (see compactDims), and
- * apply the retention time and size limit — a busy server can cross the
- * limit in well under an hour, and a change on the Settings page should not
- * wait for the next full run.
+ * apply the retention time — a change on the Settings page should not wait
+ * for the next full run.
  */
 function runFrequent() {
   try {
     const db = getDb();
     compactDims(db, { late: false });
     pruneRequests(db);
-    enforceSizeLimit(db);
   } catch (err) {
     log.error('frequent maintenance failed', { err: String(err) });
   }
 }
 
+/**
+ * The size limit, every minute: a busy server writes gigabytes an hour, and
+ * checking costs next to nothing while under the limit. Over it, each run
+ * prunes for at most 15 s, so ingest keeps most of every minute.
+ */
+function runSizeLimit() {
+  try {
+    enforceSizeLimit(getDb(), { budgetMs: 15_000 });
+  } catch (err) {
+    log.error('size limit check failed', { err: String(err) });
+  }
+}
+
 let frequentTimer = null;
+let sizeTimer = null;
 
 export function startMaintenance() {
   if (timer) return;
@@ -395,11 +420,14 @@ export function startMaintenance() {
   setTimeout(runMaintenance, 60_000);
   timer = setInterval(runMaintenance, 3600_000);
   frequentTimer = setInterval(runFrequent, 10 * 60_000);
+  sizeTimer = setInterval(runSizeLimit, 60_000);
 }
 
 export function stopMaintenance() {
   clearInterval(timer);
   clearInterval(frequentTimer);
+  clearInterval(sizeTimer);
   timer = null;
   frequentTimer = null;
+  sizeTimer = null;
 }

@@ -4,6 +4,27 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org): a new major version (2.0.0) is the
 only kind that can require you to change anything when upgrading.
 
+## [1.7.2] — 2026-10-27
+
+### Fixed
+
+- On a busy server the database's write-ahead log (`stats.db-wal`) could
+  grow without limit — 14 GB in a day has been seen — until the disk was
+  full, and the size limit did not count it. SQLite can only start the log
+  again at a moment when nothing is reading an older snapshot, and with the
+  ingester writing every second and the web interface reading constantly,
+  that moment never came. The web process now empties the log between
+  requests once it passes 64 MB, and the file is cut back to that size. A
+  large log left by an earlier version is written into the database at
+  startup, which can take a few minutes the first time.
+- The size limit now holds on a busy server. A large log slows every read,
+  pruning included, and pruning ran for 30 seconds every 10 minutes, so on a
+  heavy day the data outgrew the limit. It is now checked every minute.
+- Over the size limit, while the oldest requests were still waiting to be
+  counted into the statistics, whole days of statistics were deleted in
+  their place. Those requests now wait until they are counted, and the log
+  says so.
+
 ## [1.7.1] — 2026-10-26
 
 ### Fixed
@@ -473,6 +494,7 @@ First public release.
   filesystem, no Linux capabilities and `no-new-privileges`.
 - Works on phones: slide-in menu, readable request lists, folding filters.
 
+[1.7.2]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.7.2
 [1.7.1]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.7.1
 [1.7.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.7.0
 [1.6.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.6.0

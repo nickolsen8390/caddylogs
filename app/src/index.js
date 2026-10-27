@@ -14,7 +14,7 @@ import { fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { config, validateConfig } from './config.js';
 import { logger } from './util/log.js';
-import { getDb, closeDb } from './db.js';
+import { getDb, closeDb, foldLargeWal, startWalGuard } from './db.js';
 
 const log = logger('main');
 
@@ -39,6 +39,7 @@ async function main() {
   // ingester starts means two processes never race to migrate it.
   getDb();
   log.info('starting', { mode, node: process.version });
+  foldLargeWal();
 
   if (runIngest) {
     const { Ingestor } = await import('./ingest/index.js');
@@ -48,6 +49,7 @@ async function main() {
   if (runWeb) {
     const { startWeb } = await import('./web/server.js');
     server = await startWeb();
+    startWalGuard();
   }
   if (superviseIngest) startIngestChild();
 }

@@ -305,7 +305,7 @@ of rows. Ordinary sites never reach that, and keep every value for the week.
 The trimmed URLs are still in the stored requests, for as long as those are kept.
 
 Maintenance runs hourly inside the `ingest` container, with the early trim
-every 10 minutes. Nothing external to schedule.
+every 10 minutes and the size limit every minute. Nothing external to schedule.
 
 ### Shrinking the database file
 
@@ -407,9 +407,13 @@ is empty):
   are deleted first, whatever the retention says — then, only if those are
   down to their last hour, the oldest days of statistics. It applies to the
   data held: SQLite reuses freed space rather than shrinking the file, so the
-  file settles at about the limit.
+  file settles at about the limit. Beside it, `stats.db-wal` (the write-ahead
+  log) is kept under about 64 MB. Requests not yet counted into the
+  statistics wait until they are, so a backlog there can hold the database
+  over the limit for a while; the log says so.
 
-Changes apply within about ten minutes, with no restart. `.env` gives the
+The size limit is checked every minute; a change to the retention applies
+within about ten minutes. Neither needs a restart. `.env` gives the
 starting values (`RAW_RETENTION_HOURS`, `MAX_DB_SIZE`) — set them before the
 first start if you want more history from the start, as the first start
 reads the existing log files from the beginning.
