@@ -70,12 +70,14 @@ export default function Dashboard({ ctx }) {
       ) : (
         <>
           {/* ---------------------------------------------------- headline */}
-          <div className="grid stats" style={{ marginBottom: 14 }}>
+          <div className="grid stats stats-ten" style={{ marginBottom: 14 }}>
             <Stat label="Requests" to="/requests" value={compact(t.requests)} current={t.requests} previous={p?.requests}
                   sub={`${num(t.requests)} total`} />
             {rate && (
-              <Stat label="Requests per second" value={perSec(rate.mean)} current={rate.mean} previous={rate.previous}
-                    sub={rate.peak !== null ? `busiest ${stepName(rate.step)} ${perSec(rate.peak)}/s` : 'mean over the range'} />
+              <Stat label="Requests / sec" value={perSec(rate.mean)} current={rate.mean} previous={rate.previous}
+                    sub={rate.peak !== null ? `peak ${perSec(rate.peak)}/s` : 'mean over the range'}
+                    title={`Mean requests per second over the range${rate.peak !== null
+                      ? `; peak is the busiest ${stepName(rate.step)}` : ''}`} />
             )}
             <Stat label="Success rate" value={pct(t.success_rate)} current={t.success_rate}
                   previous={p?.success_rate} sub={`${compact(t.c2xx + t.c3xx)} 2xx/3xx`}
@@ -86,7 +88,7 @@ export default function Dashboard({ ctx }) {
             <Stat label="Server errors" value={compact(t.c5xx)} current={t.c5xx} previous={p?.c5xx}
                   inverted sub="5xx responses" tone={t.c5xx > 0 ? 'red' : 'green'} />
             <Stat label="Unique clients" to="/clients" value={compact(t.unique_ips)} current={t.unique_ips}
-                  previous={p?.unique_ips} sub="distinct source IPs" />
+                  previous={p?.unique_ips} sub="distinct IPs" />
             <Stat label="Bandwidth out" value={bytes(t.bytes_out)} current={t.bytes_out}
                   previous={p?.bytes_out} sub={`${bytes(t.bytes_in)} in`} />
             <Stat label="Mean response" value={ms(t.avg_ms)} current={t.avg_ms} previous={p?.avg_ms}

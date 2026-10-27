@@ -21,13 +21,13 @@ export function Panel({ title, actions, children, flush = false, className = '',
  * @param {object} p
  * @param {boolean} [p.inverted] true when an increase is bad (errors, latency)
  */
-export function Stat({ label, value, sub, previous, current, inverted = false, tone, to }) {
+export function Stat({ label, value, sub, previous, current, inverted = false, tone, to, title }) {
   const d = previous === undefined ? null : pctDelta(current, previous);
   const dir = d === null ? 'flat' : d > 0.001 ? 'up' : d < -0.001 ? 'down' : 'flat';
   // With `to`, the whole card is a link to the page behind the number.
   const Box = to ? Link : 'div';
   return (
-    <Box className={`panel stat${to ? ' stat-link' : ''}`} {...(to ? { to } : {})}>
+    <Box className={`panel stat${to ? ' stat-link' : ''}`} title={title} {...(to ? { to } : {})}>
       <span className="stat-label">{label}</span>
       <span className="stat-value" style={tone ? { color: `var(--${tone})` } : undefined}>
         {value}

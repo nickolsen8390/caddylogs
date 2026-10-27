@@ -149,7 +149,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .grid.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.grid.stats { grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); }
+/* Ten cards in one row from a 1920px-wide screen (sidebar and padding aside). */
+.grid.stats { gap: 12px; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); }
+/* The Dashboard's ten, where one row is too narrow: two rows of five, not 8 + 2. */
+@media (min-width: 1100px) and (max-width: 1859px) {
+  .grid.stats.stats-ten { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+}
 @media (max-width: 1180px) {
   .grid.cols-3, .grid.cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -173,7 +178,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   font-size: 23px; font-weight: 650; letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums; line-height: 1.15;
 }
-.stat-sub { font-size: 11.5px; color: var(--text-dim); display: flex; align-items: center; gap: 6px; }
+.stat-sub { font-size: 11.5px; color: var(--text-dim); display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; }
 .delta { font-variant-numeric: tabular-nums; font-weight: 600; }
 .delta.up { color: var(--green); }
 .delta.down { color: var(--red); }

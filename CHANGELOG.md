@@ -4,6 +4,17 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org): a new major version (2.0.0) is the
 only kind that can require you to change anything when upgrading.
 
+## [1.7.1] — 2026-10-26
+
+### Fixed
+
+- Dashboard: the ten headline cards fit in one row again from a 1920-pixel
+  wide screen; 1.7.0's Requests per second card had pushed one onto a second
+  row. Cards may now be a little narrower, and the new card's wording is
+  shorter ("Requests / sec", "peak 34.2/s", with the detail on hover). On
+  screens too narrow for one row they form two rows of five rather than
+  eight and two.
+
 ## [1.7.0] — 2026-10-26
 
 ### Added
@@ -462,6 +473,7 @@ First public release.
   filesystem, no Linux capabilities and `no-new-privileges`.
 - Works on phones: slide-in menu, readable request lists, folding filters.
 
+[1.7.1]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.7.1
 [1.7.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.7.0
 [1.6.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.6.0
 [1.5.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.5.0
