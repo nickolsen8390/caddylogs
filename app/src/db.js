@@ -156,6 +156,13 @@ function migrate(db) {
     }
   }
 
+  if (!columns('ingest_state').has('gone_at')) {
+    // 1.7.3: files no longer in the log directory leave the Health page.
+    // The ingester marks them on its first scan.
+    db.exec('ALTER TABLE ingest_state ADD COLUMN gone_at INTEGER');
+    log.info('migration: added ingest_state.gone_at');
+  }
+
   if (!columns('sessions').has('persistent')) {
     // "Keep me signed in". Existing sessions keep the idle timeout they were
     // created under.

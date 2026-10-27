@@ -4,6 +4,17 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org): a new major version (2.0.0) is the
 only kind that can require you to change anything when upgrading.
 
+## [1.7.3] — 2026-10-27
+
+### Fixed
+
+- Health: "Log files being followed" lists only the files in the log
+  directory now, each under its current name. A rotated file kept the name
+  `access.log` until its next read, which after rotation usually never
+  came, and files Caddy had deleted stayed listed for 30 days — so the list
+  filled with old `access.log` entries. A deleted file's read position is
+  now kept a day rather than 30.
+
 ## [1.7.2] — 2026-10-27
 
 ### Fixed
@@ -494,6 +505,7 @@ First public release.
   filesystem, no Linux capabilities and `no-new-privileges`.
 - Works on phones: slide-in menu, readable request lists, folding filters.
 
+[1.7.3]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.7.3
 [1.7.2]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.7.2
 [1.7.1]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.7.1
 [1.7.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.7.0

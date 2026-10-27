@@ -193,7 +193,7 @@ export default function Health({ ctx }) {
                 </thead>
                 <tbody>
                   {ingest.files.map((f) => (
-                    <tr key={f.path}>
+                    <tr key={f.inode}>
                       <td className="cell-wide">
                         <span className="truncate mono" title={f.path}>{f.path}</span>
                       </td>

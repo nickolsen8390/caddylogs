@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS ingest_state (
   offset     INTEGER NOT NULL DEFAULT 0,
   size       INTEGER NOT NULL DEFAULT 0,
   first_seen INTEGER NOT NULL DEFAULT 0,
-  updated_at INTEGER NOT NULL DEFAULT 0
+  updated_at INTEGER NOT NULL DEFAULT 0,
+  gone_at    INTEGER   -- when the file was last seen missing from the directory
 );
 CREATE INDEX IF NOT EXISTS idx_ingest_state_updated ON ingest_state(updated_at);
 

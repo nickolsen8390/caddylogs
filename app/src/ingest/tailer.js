@@ -85,7 +85,17 @@ export class Tailer {
          path = excluded.path, offset = excluded.offset,
          size = excluded.size, updated_at = excluded.updated_at`
     );
-    this.qPrune = db.prepare('DELETE FROM ingest_state WHERE updated_at < ?');
+    this.qPrune = db.prepare('DELETE FROM ingest_state WHERE updated_at < ? OR gone_at < ?');
+    // A file's name changes when it is rotated, usually after its last line
+    // was read, so no read position carries the new one: each scan records it.
+    this.qPresent = db.prepare(
+      `UPDATE ingest_state SET path = ?, gone_at = NULL
+        WHERE inode = ? AND (path <> ? OR gone_at IS NOT NULL)`
+    );
+    this.qGone = db.prepare(
+      `UPDATE ingest_state SET gone_at = ?
+        WHERE gone_at IS NULL AND inode NOT IN (SELECT value FROM json_each(?))`
+    );
   }
 
   matches(name) {
@@ -134,13 +144,16 @@ export class Tailer {
         log.info('file rotated', { from: state.path, to: full, inode: key });
         state.path = full;
       }
+      this.qPresent.run(full, key, full);
     }
 
-    // Files that vanished (deleted after rotation) stop being polled, but their
-    // checkpoint row stays until pruned so a re-appearance is not re-ingested.
+    // Files that vanished (deleted after rotation) stop being polled, and
+    // leave the Health page. Their read position stays a day (see start), so
+    // one that comes back is not read again.
     for (const key of [...this.files.keys()]) {
       if (!seen.has(key)) this.files.delete(key);
     }
+    this.qGone.run(Date.now(), JSON.stringify([...seen]));
   }
 
   async readFile(key, state) {
@@ -256,9 +269,9 @@ export class Tailer {
   async start() {
     await this.scan();
     this.timer = setInterval(() => void this.tick(), this.pollMs);
-    // Prune checkpoints for inodes not touched in 30 days.
+    // Prune read positions not touched in 30 days, or of files gone a day.
     this.pruneTimer = setInterval(
-      () => this.qPrune.run(Date.now() - 30 * 86_400_000),
+      () => this.qPrune.run(Date.now() - 30 * 86_400_000, Date.now() - 86_400_000),
       6 * 3600_000
     );
     void this.tick();

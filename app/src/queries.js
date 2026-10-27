@@ -1150,7 +1150,10 @@ export function ingestStats() {
   return {
     days: db.prepare('SELECT * FROM ingest_stats ORDER BY day DESC LIMIT 14').all(),
     files: db
-      .prepare('SELECT path, offset, size, updated_at FROM ingest_state ORDER BY updated_at DESC LIMIT 50')
+      .prepare(
+        `SELECT inode, path, offset, size, updated_at FROM ingest_state
+          WHERE gone_at IS NULL ORDER BY updated_at DESC LIMIT 50`
+      )
       .all(),
     counts: {
       // COUNT(*) on events can be large; SQLite still answers it from the
