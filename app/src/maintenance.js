@@ -14,7 +14,9 @@ import { config } from './config.js';
 import { logger } from './util/log.js';
 import { DAY, oldestOpenVisitHour } from './ingest/rollup.js';
 import { SALT_PREFIX, VISIT_KEEP_MS, forgetSalts } from './ingest/visits.js';
-import { rawRetentionMs, maxDbBytes } from './settings.js';
+import { rawRetentionMs, rawLineRetentionMs, maxDbBytes } from './settings.js';
+import { encode, mergeEncoded, newSketch } from './util/hll.js';
+import { MINUTE_KEEP_DAYS } from './ingest/minutes.js';
 
 const log = logger('maintain');
 
@@ -96,6 +98,8 @@ function foldHourlyToDaily(db) {
          dur_sum  = dims.dur_sum  + excluded.dur_sum`
     ).run(boundary);
 
+    foldSketches(db, boundary);
+
     db.prepare(`DELETE FROM rollup WHERE gran = 'h' AND bucket < ?`).run(boundary);
     db.prepare(`DELETE FROM dims   WHERE gran = 'h' AND bucket < ?`).run(boundary);
     db.prepare('DELETE FROM visitor_seen WHERE bucket < ?').run(boundary);
@@ -104,6 +108,29 @@ function foldHourlyToDaily(db) {
   fold();
   log.info('folded hourly rows into daily', { boundary, rows: pending });
   return pending;
+}
+
+/** Merge the hourly address sketches before `boundary` into daily ones. */
+function foldSketches(db, boundary) {
+  const days = new Map(); // day+host -> [day, host, registers]
+  for (const { bucket, host, regs } of db
+    .prepare(`SELECT bucket, host, regs FROM ip_sketch WHERE gran = 'h' AND bucket < ?`)
+    .all(boundary)) {
+    const day = Math.floor(bucket / DAY) * DAY;
+    const key = `${day}|${host}`;
+    if (!days.has(key)) days.set(key, [day, host, newSketch()]);
+    mergeEncoded(days.get(key)[2], regs);
+  }
+  const get = db.prepare(`SELECT regs FROM ip_sketch WHERE gran = 'd' AND host = ? AND bucket = ?`);
+  const set = db.prepare(
+    `INSERT INTO ip_sketch (bucket, gran, host, regs) VALUES (?, 'd', ?, ?)
+     ON CONFLICT(gran, host, bucket) DO UPDATE SET regs = excluded.regs`
+  );
+  for (const [day, host, regs] of days.values()) {
+    mergeEncoded(regs, get.get(host, day)?.regs);
+    set.run(day, host, encode(regs));
+  }
+  db.prepare(`DELETE FROM ip_sketch WHERE gran = 'h' AND bucket < ?`).run(boundary);
 }
 
 /** Dimensions whose values are unbounded, and so are trimmed. */
@@ -228,7 +255,36 @@ function pruneRequests(db) {
   const events = Number.isFinite(keepMs)
     ? db.prepare('DELETE FROM events WHERE ts < ? AND rolled = 1').run(Date.now() - keepMs).changes
     : 0;
-  return { events, eventsRaw: dropOrphanedRaw(db) };
+  return { events, eventsRaw: dropOrphanedRaw(db) + pruneLogLines(db) };
+}
+
+const LINE_CHUNK = 20_000; // log lines deleted per transaction
+
+/**
+ * Original log lines past their own retention (Settings page), while their
+ * requests stay. Ids only grow, so that is every line below the first
+ * request inside the window — or below the first not yet counted, whose
+ * line the rollup may still read. In chunks, for at most `budgetMs`: the
+ * first run after the setting is shortened can have gigabytes to go.
+ */
+function pruneLogLines(db, budgetMs = 15_000) {
+  const keepMs = rawLineRetentionMs();
+  if (!Number.isFinite(keepMs)) return 0;
+  const inside = db.prepare('SELECT id FROM events WHERE ts >= ? ORDER BY ts LIMIT 1').get(Date.now() - keepMs)?.id;
+  const pending = db.prepare('SELECT MIN(id) AS id FROM events WHERE rolled = 0').get().id;
+  const newest = db.prepare('SELECT MAX(id) AS id FROM events').get().id;
+  const below = Math.min(inside ?? (newest ?? 0) + 1, pending ?? Infinity);
+  const chunk = db.prepare(
+    `DELETE FROM events_raw WHERE id IN (SELECT id FROM events_raw WHERE id < ? ORDER BY id LIMIT ${LINE_CHUNK})`
+  );
+  const started = Date.now();
+  let removed = 0;
+  for (let n = LINE_CHUNK; n === LINE_CHUNK && Date.now() - started < budgetMs; ) {
+    n = chunk.run(below).changes;
+    removed += n;
+  }
+  if (removed) log.info('removed original log lines past their retention', { lines: removed });
+  return removed;
 }
 
 const SIZE_CHUNK = 20_000; // stored requests deleted per step
@@ -295,7 +351,7 @@ export function enforceSizeLimit(db, { budgetMs = 30_000 } = {}) {
       }
       const end = Math.floor(oldest / DAY) * DAY + DAY;
       db.transaction(() => {
-        for (const table of ['rollup', 'dims', 'visitor_seen']) {
+        for (const table of ['rollup', 'dims', 'visitor_seen', 'ip_sketch', 'rollup_minute']) {
           db.prepare(`DELETE FROM ${table} WHERE bucket < ?`).run(end);
         }
       })();
@@ -324,6 +380,12 @@ function prune(db) {
   const dailyCutoff = nowSec() - config.retention.days * DAY;
   out.rollup = db.prepare('DELETE FROM rollup WHERE bucket < ?').run(dailyCutoff).changes;
   out.dims = db.prepare('DELETE FROM dims WHERE bucket < ?').run(dailyCutoff).changes;
+  out.sketches = db
+    .prepare(`DELETE FROM ip_sketch WHERE bucket < ? OR (gran = 'm' AND bucket < ?)`)
+    .run(dailyCutoff, nowSec() - MINUTE_KEEP_DAYS * DAY).changes;
+  out.minutes = db
+    .prepare('DELETE FROM rollup_minute WHERE bucket < ?')
+    .run(nowSec() - MINUTE_KEEP_DAYS * DAY).changes;
 
   // Hosts with no remaining data disappear from the domains list.
   out.hosts = db

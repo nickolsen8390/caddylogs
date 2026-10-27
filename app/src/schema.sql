@@ -110,6 +110,38 @@ CREATE TABLE IF NOT EXISTS rollup (
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS idx_rollup_scan ON rollup(gran, bucket);
 
+-- The same counters per minute (bucket: epoch seconds), for charts and the
+-- part-hours at either end of a window, so neither reads individual
+-- requests. Counts requests once rolled up; kept MINUTE_KEEP_DAYS.
+CREATE TABLE IF NOT EXISTS rollup_minute (
+  bucket    INTEGER NOT NULL,
+  host      TEXT    NOT NULL,
+  requests  INTEGER NOT NULL DEFAULT 0,
+  bytes_out INTEGER NOT NULL DEFAULT 0,
+  bytes_in  INTEGER NOT NULL DEFAULT 0,
+  dur_sum   REAL    NOT NULL DEFAULT 0,
+  dur_max   REAL    NOT NULL DEFAULT 0,
+  c1xx      INTEGER NOT NULL DEFAULT 0,
+  c2xx      INTEGER NOT NULL DEFAULT 0,
+  c3xx      INTEGER NOT NULL DEFAULT 0,
+  c4xx      INTEGER NOT NULL DEFAULT 0,
+  c5xx      INTEGER NOT NULL DEFAULT 0,
+  bots      INTEGER NOT NULL DEFAULT 0,
+  pageviews INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (bucket, host)
+) WITHOUT ROWID;
+
+-- Distinct client addresses, as HyperLogLog sketches (util/hll.js): per
+-- minute ('m', kept like rollup_minute), hour ('h') and day ('d', folded from
+-- the hours with the rollup). host '' is every host together.
+CREATE TABLE IF NOT EXISTS ip_sketch (
+  bucket INTEGER NOT NULL,
+  gran   TEXT    NOT NULL,
+  host   TEXT    NOT NULL,
+  regs   BLOB    NOT NULL,
+  PRIMARY KEY (gran, host, bucket)
+) WITHOUT ROWID;
+
 -- Generic dimension counters. One row per distinct value per bucket per host.
 -- dim ∈ status | method | path | ip | ua | browser | os | device | country |
 --       asn | referer | proto | tls | cipher | ext | lat | kind

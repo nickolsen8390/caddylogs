@@ -424,6 +424,10 @@ group('Settings', () => {
   ok('until full needs a limit', valid({ rawRetentionHours: 0, maxDbSizeMb: 0 }), ['rawRetentionHours']);
   ok('limit too small', valid({ rawRetentionHours: 48, maxDbSizeMb: 10 }), ['maxDbSizeMb']);
   ok('fractional hours refused', valid({ rawRetentionHours: 1.5, maxDbSizeMb: 0 }), ['rawRetentionHours']);
+  ok('log lines for 6 hours', valid({ rawRetentionHours: 48, maxDbSizeMb: 0, rawLineHours: 6 }), []);
+  ok('log lines as long as requests', valid({ rawRetentionHours: 48, maxDbSizeMb: 0, rawLineHours: 0 }), []);
+  ok('log line hours must be whole', valid({ rawRetentionHours: 48, maxDbSizeMb: 0, rawLineHours: 2.5 }), ['rawLineHours']);
+  ok('log line hours not negative', valid({ rawRetentionHours: 48, maxDbSizeMb: 0, rawLineHours: -1 }), ['rawLineHours']);
 });
 
 group('Live stream filters', () => {

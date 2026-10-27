@@ -14,12 +14,15 @@ const GB = 1024; // MB
 function formOf(s) {
   const hours = s.rawRetentionHours;
   const days = hours > 0 && hours % 24 === 0;
+  const lines = s.rawLineHours ?? 0;
   return {
     mode: hours > 0 ? 'time' : 'full',
     amount: hours > 0 ? String(days ? hours / 24 : hours) : '48',
     unit: hours > 0 && days ? 'days' : 'hours',
     limited: s.maxDbSizeMb > 0,
     sizeGb: s.maxDbSizeMb > 0 ? String(+(s.maxDbSizeMb / GB).toFixed(2)) : '10',
+    linesLimited: lines > 0,
+    linesAmount: lines > 0 ? String(lines) : '6',
   };
 }
 
@@ -28,9 +31,11 @@ function settingsOf(f) {
   const amount = Number(f.amount);
   const hours = f.mode === 'full' ? 0 : Math.round(amount * (f.unit === 'days' ? 24 : 1));
   const size = f.limited ? Math.round(Number(f.sizeGb) * GB) : 0;
+  const lines = f.linesLimited ? Math.round(Number(f.linesAmount)) : 0;
   return {
     rawRetentionHours: Number.isFinite(hours) ? hours : null,
     maxDbSizeMb: Number.isFinite(size) ? size : null,
+    rawLineHours: Number.isFinite(lines) ? lines : null,
   };
 }
 
@@ -62,7 +67,8 @@ export default function Settings({ ctx }) {
     setResult(null);
   };
   const changed =
-    next.rawRetentionHours !== data.settings.rawRetentionHours || next.maxDbSizeMb !== data.settings.maxDbSizeMb;
+    next.rawRetentionHours !== data.settings.rawRetentionHours || next.maxDbSizeMb !== data.settings.maxDbSizeMb
+    || next.rawLineHours !== (data.settings.rawLineHours ?? 0);
 
   // How much one day of stored requests takes at the current rate, to help
   // choose a size, and how much history a size would hold.
@@ -148,6 +154,22 @@ export default function Settings({ ctx }) {
               way for new ones. Either way, the size limit wins.
             </span>
             {problems.rawRetentionHours && <Banner level="error">{problems.rawRetentionHours}</Banner>}
+
+            <label className="hstack" style={{ gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
+              <input type="checkbox" checked={form.linesLimited} disabled={!canEdit}
+                     onChange={(e) => set({ linesLimited: e.target.checked })} />
+              Keep each request's original log line for only
+              <input className="input" type="number" min="1" step="1" style={{ width: 80 }}
+                     value={form.linesAmount} disabled={!canEdit || !form.linesLimited}
+                     onChange={(e) => set({ linesAmount: e.target.value })} aria-label="Log line retention in hours" />
+              hours
+            </label>
+            <span className="faint" style={{ fontSize: 11.5 }}>
+              The original line usually takes most of the space a stored request does, so this keeps
+              several times as many requests in the same space. Older requests can still be searched
+              and drilled into; their detail shows the fields read from the line, without the line.
+            </span>
+            {problems.rawLineHours && <Banner level="error">{problems.rawLineHours}</Banner>}
           </div>
         </Panel>
 
@@ -203,7 +225,8 @@ export default function Settings({ ctx }) {
             ? `Last changed ${dateTime(last.updated_at)}${last.username ? ` by ${last.username}` : ''}.`
             : 'Not changed here yet: these are the values from .env'}
           {' '}Defaults from .env: kept {keptFor(defaults.rawRetentionHours) ?? 'until the size limit'},{' '}
-          {defaults.maxDbSizeMb ? `limit ${bytes(defaults.maxDbSizeMb * 1_048_576)}` : 'no size limit'}.
+          {defaults.maxDbSizeMb ? `limit ${bytes(defaults.maxDbSizeMb * 1_048_576)}` : 'no size limit'},{' '}
+          {defaults.rawLineHours ? `log lines kept ${keptFor(defaults.rawLineHours)}` : 'log lines kept with their requests'}.
         </span>
         {canEdit && (
           <div className="hstack" style={{ gap: 6 }}>

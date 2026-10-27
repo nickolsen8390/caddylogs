@@ -403,6 +403,12 @@ is empty):
 - **Stored requests** are kept for a time you choose, in hours or days — or
   until the database reaches its size limit, which keeps as much history as
   the space allows.
+- **Original log lines** can be kept for less time than their requests. The
+  line usually takes most of the space a stored request does (on a busy
+  proxy, 9 GB of 10), so keeping it for a few hours holds several times as
+  many requests in the same space. Older requests still appear in searches
+  and drill-downs; their detail shows the fields read from the line,
+  without the line itself.
 - **Size limit**: when the database reaches it, the oldest stored requests
   are deleted first, whatever the retention says — then, only if those are
   down to their last hour, the oldest days of statistics. It applies to the
@@ -414,7 +420,8 @@ is empty):
 
 The size limit is checked every minute; a change to the retention applies
 within about ten minutes. Neither needs a restart. `.env` gives the
-starting values (`RAW_RETENTION_HOURS`, `MAX_DB_SIZE`) — set them before the
+starting values (`RAW_RETENTION_HOURS`, `RAW_LINE_RETENTION_HOURS`,
+`MAX_DB_SIZE`) — set them before the
 first start if you want more history from the start, as the first start
 reads the existing log files from the beginning.
 
@@ -722,12 +729,14 @@ likely to change:
 | `RETENTION_DAYS` | `365` | how long statistics are kept |
 | `HOURLY_RETENTION_DAYS` | `45` | how long hour-level detail is kept |
 | `RAW_RETENTION_HOURS` | `48` | how long individual requests are kept, to start with (0 = until the size limit); then the Settings page |
+| `RAW_LINE_RETENTION_HOURS` | `0` (as long as the request) | how long each request's original log line is kept, to start with; then the Settings page |
 | `MAX_DB_SIZE` | — (no limit) | largest the database may grow, e.g. `10GB`, to start with; then the Settings page |
 | `DIM_HOURLY_MAX` | `2000` | values one dimension may gather in an hour before it is trimmed right away (see §5) |
 | `IGNORE_HOSTS` / `IGNORE_CIDRS` | — | traffic never recorded (healthchecks, monitoring) |
 | `EMBED_ORIGINS` | — (no framing) | origins allowed to show the interface in a frame, and to sign in for it (see §7) |
 | `BOT_HEADER_CHECK` | `true` | count a "Chrome" that sends no Sec-Fetch / client-hint headers as a bot |
 | `STREAM_POLL_MS` | `400` | live-tail latency |
+| `QUERY_WORKERS` | `2` | worker threads running the pages' queries, so a slow one never holds up the rest of the interface (0 = on the web server's thread) |
 | `INGEST_BACKFILL` | `true` | read existing logs from the start on first run |
 
 ## 9. Operating

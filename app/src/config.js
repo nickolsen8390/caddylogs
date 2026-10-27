@@ -110,6 +110,12 @@ export const config = {
   dbPath: env.DB_PATH || path.resolve('./data/stats.db'),
   publicDir: env.PUBLIC_DIR || path.resolve('./public'),
 
+  web: {
+    // Worker threads running the reports (web/pool.js); 0 runs them on the
+    // web server's own thread.
+    queryWorkers: Math.min(8, Math.max(0, int(env.QUERY_WORKERS, 2))),
+  },
+
   logDir: env.LOG_DIR || '/logs',
   logGlob: env.CADDY_LOG_GLOB || '*.log',
   ignoreHosts: new Set(list(env.IGNORE_HOSTS).map((h) => h.toLowerCase())),
@@ -141,6 +147,9 @@ export const config = {
     // Starting values for the Settings page, which overrides both (settings.js).
     // 0 hours = keep stored requests until the database reaches its size limit.
     rawHours: Math.max(0, int(env.RAW_RETENTION_HOURS, 48)),
+    // Hours to keep each stored request's original log line, which takes most
+    // of the space; 0 = as long as the request.
+    rawLineHours: Math.max(0, int(env.RAW_LINE_RETENTION_HOURS, 0)),
     // 0 = no limit. Accepts 500MB, 20GB, 1.5TB, or a number of megabytes.
     maxDbSizeMb: sizeMb(env.MAX_DB_SIZE, 0),
     // Replaced by MAX_DB_SIZE in 1.3.0; kept only to warn that it is ignored.

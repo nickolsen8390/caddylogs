@@ -23,19 +23,23 @@ import { PAGEVIEW_SQL } from './ingest/traffic.js';
 import { VISIT_KEEP_MS } from './ingest/visits.js';
 import { readRaw } from './util/rawlog.js';
 import { retentionInfo } from './settings.js';
+import { addTo, estimate, mergeEncoded, newSketch } from './util/hll.js';
 
+const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
 
-/** Sub-hour resolution is only possible while raw events are still retained. */
-function rawWindowStart() {
-  return oldestRetainedEvent() ?? Date.now();
+/** Start of the per-minute counters (rollup_minute), in ms; null before any. */
+function minuteDataStart() {
+  const b = getDb().prepare('SELECT MIN(bucket) AS b FROM rollup_minute').get().b;
+  return b === null ? null : b * 1000;
 }
 
 /** Pick a sensible bucket size (seconds) for a time span. */
 export function chooseStep(fromMs, toMs) {
   const span = Math.max(1, toMs - fromMs);
-  if (span <= 6 * HOUR_MS && fromMs >= rawWindowStart()) return 60; // minutes, from events
+  const minutes = minuteDataStart();
+  if (span <= 6 * HOUR_MS && minutes !== null && fromMs >= minutes) return 60;
   if (span <= 3 * DAY_MS) return 3600;
   if (span <= 90 * DAY_MS) return 86400;
   return 86400 * 7;
@@ -69,19 +73,21 @@ function likePattern(search) {
 
 /**
  * How totals() covers a window. Whole hours come from the hourly rollup.
- * The part-hours at either end come from the stored requests, while those
- * still reach them and the hour has not been folded into a day; otherwise
+ * The part-hours at either end come from the per-minute counters, while
+ * those reach them and the hour has not been folded into a day; otherwise
  * they are rounded as before — the leading part-hour left out, the trailing
- * one counted whole. The trailing part-hour of a window ending now is then
- * exact, requests not yet rolled up included.
+ * one counted whole. Within a part-hour, the seconds before its first whole
+ * minute and after its last, and requests not yet rolled up, come from the
+ * stored requests, so a window ending now is exact to the request.
  */
 function coverage(fromMs, toMs) {
   const db = getDb();
-  const oldest = oldestRetainedEvent();
+  const minutes = minuteDataStart();
   const hourly = db.prepare("SELECT MIN(bucket) AS b FROM rollup WHERE gran = 'h'").get().b;
   const floorH = (t) => Math.floor(t / HOUR_MS) * HOUR_MS;
-  const fromEvents = ([a, b]) =>
-    oldest !== null && b > oldest && (hourly === null || floorH(a) >= hourly * 1000);
+  const fromEvents = ([a]) =>
+    minutes !== null && Math.floor(a / MINUTE_MS) * MINUTE_MS >= minutes
+    && (hourly === null || floorH(a) >= hourly * 1000);
 
   const firstHour = Math.ceil(fromMs / HOUR_MS) * HOUR_MS;
   const lastHour = floorH(toMs);
@@ -108,7 +114,22 @@ function coverage(fromMs, toMs) {
       from = edge[1]; // a leading part-hour, left out
     }
   }
-  return { hours, edges: exact, from };
+  // Each exact part-hour: its whole minutes from rollup_minute, plus the
+  // requests in them not rolled up yet; the seconds around them from events.
+  const minuteRanges = [];
+  const eventRanges = [];
+  for (const [a, b] of exact) {
+    const mA = Math.ceil(a / MINUTE_MS) * MINUTE_MS;
+    const mB = Math.floor(b / MINUTE_MS) * MINUTE_MS;
+    if (mA >= mB) {
+      eventRanges.push([a, b]);
+      continue;
+    }
+    minuteRanges.push([mA, mB]);
+    if (a < mA) eventRanges.push([a, mA]);
+    if (mB < b) eventRanges.push([mB, b]);
+  }
+  return { hours, edges: exact, minuteRanges, eventRanges, from };
 }
 
 /** Bind object and condition for the hours and folded days in `cov`. */
@@ -122,17 +143,45 @@ function hourScope(cov, fromMs, toMs, host) {
   return { p, where };
 }
 
-/** The `events` condition for the part-hours in `cov`, with its bind values. */
-function edgeScope(cov, host) {
-  const p = {};
-  if (host) p.host = host;
-  if (!cov.edges.length) return { p, where: '0' };
-  const parts = cov.edges.map(([a, b], i) => {
-    p[`a${i}`] = a;
-    p[`b${i}`] = b;
-    return `(ts >= @a${i} AND ts < @b${i})`;
+/**
+ * `col` in any of `ranges` ([from, to) in ms), as SQL, adding its bind values
+ * to `p` under names starting with `tag`. `scale` 1000 for a column in
+ * seconds. Matches nothing when there are no ranges.
+ */
+function inRanges(col, ranges, tag, p, scale = 1) {
+  if (!ranges.length) return '0';
+  const parts = ranges.map(([a, b], i) => {
+    p[`${tag}a${i}`] = a / scale;
+    p[`${tag}b${i}`] = b / scale;
+    return `(${col} >= @${tag}a${i} AND ${col} < @${tag}b${i})`;
   });
-  return { p, where: `(${parts.join(' OR ')}) ${hostClause(host)}` };
+  return `(${parts.join(' OR ')})`;
+}
+
+// Headline counters, as sums of rollup or rollup_minute rows and as counted
+// from requests — the same as rollup.js's countRequest().
+const SUM_COUNTERS = `
+  COALESCE(SUM(requests),0) AS requests, COALESCE(SUM(bytes_out),0) AS bytes_out,
+  COALESCE(SUM(bytes_in),0) AS bytes_in, COALESCE(SUM(dur_sum),0) AS dur_sum,
+  COALESCE(MAX(dur_max),0) AS dur_max,
+  COALESCE(SUM(c1xx),0) AS c1xx, COALESCE(SUM(c2xx),0) AS c2xx, COALESCE(SUM(c3xx),0) AS c3xx,
+  COALESCE(SUM(c4xx),0) AS c4xx, COALESCE(SUM(c5xx),0) AS c5xx, COALESCE(SUM(bots),0) AS bots,
+  COALESCE(SUM(pageviews),0) AS pageviews`;
+const EVENT_COUNTERS = `
+  COUNT(*) AS requests,
+  COALESCE(SUM(bytes_out),0) AS bytes_out, COALESCE(SUM(bytes_in),0) AS bytes_in,
+  COALESCE(SUM(dur_ms),0) AS dur_sum, COALESCE(MAX(dur_ms),0) AS dur_max,
+  COALESCE(SUM(status / 100 = 1),0) AS c1xx, COALESCE(SUM(status / 100 = 2),0) AS c2xx,
+  COALESCE(SUM(status / 100 = 3),0) AS c3xx, COALESCE(SUM(status / 100 = 4),0) AS c4xx,
+  COALESCE(SUM(status / 100 = 5),0) AS c5xx, COALESCE(SUM(bot != 0),0) AS bots,
+  COALESCE(SUM(${PAGEVIEW_SQL}),0) AS pageviews`;
+
+/** Add counters `b` into `a`. */
+function addCounters(a, b) {
+  for (const k of Object.keys(b)) {
+    if (k === 'dur_max') a.dur_max = Math.max(a.dur_max, b.dur_max);
+    else if (k !== 'bucket') a[k] = (a[k] ?? 0) + b[k];
+  }
 }
 
 /**
@@ -179,89 +228,102 @@ function edgeVisits(cov, host) {
   return out;
 }
 
+/**
+ * Distinct client addresses, estimated (util/hll.js): the sketches of the
+ * hours, days and edge minutes in the window, merged, with the addresses of
+ * the requests read directly added in. Hours and days from before sketches
+ * were kept count the addresses their ip rows still list — exact, unless
+ * maintenance trimmed them, as it does on busy hours.
+ */
+function uniqueIps(db, p, hs, minutes, where, host) {
+  const regs = newSketch();
+  const sp = { ...p, sh: host ?? '' };
+  const all = (sql) => db.prepare(sql).all(bindFor(sql, sp));
+  const have = new Set();
+  for (const r of [
+    ...all(`SELECT gran, bucket, regs FROM ip_sketch WHERE gran = 'h' AND host = @sh AND bucket >= @hFrom AND bucket < @hTo`),
+    ...all(`SELECT gran, bucket, regs FROM ip_sketch WHERE gran = 'd' AND host = @sh AND bucket >= @from AND bucket < @to`),
+    ...all(`SELECT gran, bucket, regs FROM ip_sketch WHERE gran = 'm' AND host = @sh AND ${minutes}`),
+  ]) {
+    mergeEncoded(regs, r.regs);
+    have.add(`${r.gran}${r.bucket}`);
+  }
+  const missing = all(`SELECT DISTINCT gran, bucket FROM rollup WHERE ${hs.where}`)
+    .filter((r) => !have.has(`${r.gran}${r.bucket}`));
+  if (missing.length) {
+    const values = db.prepare(
+      `SELECT value FROM dims WHERE gran = ? AND dim = 'ip' AND bucket = ? ${host ? 'AND host = ?' : ''}`
+    );
+    for (const { gran, bucket } of missing) {
+      for (const { value } of values.all(...(host ? [gran, bucket, host] : [gran, bucket]))) {
+        if (value !== '(other)') addTo(regs, value);
+      }
+    }
+  }
+  for (const w of [where.seconds, where.unrolled]) {
+    for (const { ip } of all(`SELECT ip FROM events WHERE ${w} AND ip IS NOT NULL AND ip != ''`)) addTo(regs, ip);
+  }
+  return estimate(regs);
+}
+
 export function totals(fromMs, toMs, host = null) {
   const db = getDb();
   const cov = coverage(fromMs, toMs);
   const hs = hourScope(cov, fromMs, toMs, host);
-  const es = edgeScope(cov, host);
+  // Every statement below binds from `p`, each with just the names it uses.
+  const p = { ...hs.p };
+  const minutes = inRanges('bucket', cov.minuteRanges, 'm', p, 1000);
+  const where = {
+    minutes: `${minutes} ${hostClause(host)}`,
+    // Requests read directly: the seconds around the whole minutes, and the
+    // requests in those minutes not rolled up yet (so not in rollup_minute).
+    seconds: `${inRanges('ts', cov.eventRanges, 'e', p)} ${hostClause(host)}`,
+    unrolled: `rolled = 0 AND ${inRanges('ts', cov.minuteRanges, 'u', p)} ${hostClause(host)}`,
+  };
+  const get = (sql) => db.prepare(sql).get(bindFor(sql, p));
 
-  const row = db
-    .prepare(
-      `SELECT COALESCE(SUM(requests),0)  AS requests,
-              COALESCE(SUM(bytes_out),0) AS bytes_out,
-              COALESCE(SUM(bytes_in),0)  AS bytes_in,
-              COALESCE(SUM(dur_sum),0)   AS dur_sum,
-              COALESCE(MAX(dur_max),0)   AS dur_max,
-              COALESCE(SUM(c1xx),0) AS c1xx, COALESCE(SUM(c2xx),0) AS c2xx,
-              COALESCE(SUM(c3xx),0) AS c3xx, COALESCE(SUM(c4xx),0) AS c4xx,
-              COALESCE(SUM(c5xx),0) AS c5xx, COALESCE(SUM(bots),0) AS bots,
-              COALESCE(SUM(pageviews),0) AS pageviews,
-              COALESCE(SUM(visits),0) AS visits,
-              COALESCE(SUM(CASE WHEN gran = 'd' THEN visitors ELSE 0 END),0) AS visitors,
-              COALESCE(SUM(bounces),0) AS bounces, COALESCE(SUM(visit_ms),0) AS visit_ms
-         FROM rollup
-        WHERE ${hs.where}`
-    )
-    .get(hs.p);
+  const row = get(
+    `SELECT ${SUM_COUNTERS},
+            COALESCE(SUM(visits),0) AS visits,
+            COALESCE(SUM(CASE WHEN gran = 'd' THEN visitors ELSE 0 END),0) AS visitors,
+            COALESCE(SUM(bounces),0) AS bounces, COALESCE(SUM(visit_ms),0) AS visit_ms
+       FROM rollup
+      WHERE ${hs.where}`
+  );
 
   if (cov.edges.length) {
-    // The same counters as rollup.js's Accumulator.bump(), from the requests.
-    const e = db
-      .prepare(
-        `SELECT COUNT(*) AS requests,
-                COALESCE(SUM(bytes_out),0) AS bytes_out, COALESCE(SUM(bytes_in),0) AS bytes_in,
-                COALESCE(SUM(dur_ms),0) AS dur_sum, COALESCE(MAX(dur_ms),0) AS dur_max,
-                COALESCE(SUM(status / 100 = 1),0) AS c1xx, COALESCE(SUM(status / 100 = 2),0) AS c2xx,
-                COALESCE(SUM(status / 100 = 3),0) AS c3xx, COALESCE(SUM(status / 100 = 4),0) AS c4xx,
-                COALESCE(SUM(status / 100 = 5),0) AS c5xx, COALESCE(SUM(bot != 0),0) AS bots,
-                COALESCE(SUM(${PAGEVIEW_SQL}),0) AS pageviews
-           FROM events WHERE ${es.where}`
-      )
-      .get(es.p);
-    for (const k of Object.keys(e)) {
-      if (k === 'dur_max') row.dur_max = Math.max(row.dur_max, e.dur_max);
-      else row[k] += e[k];
-    }
+    addCounters(row, get(`SELECT ${SUM_COUNTERS} FROM rollup_minute WHERE ${where.minutes}`));
+    addCounters(row, get(`SELECT ${EVENT_COUNTERS} FROM events WHERE ${where.seconds}`));
+    addCounters(row, get(`SELECT ${EVENT_COUNTERS} FROM events WHERE ${where.unrolled}`));
     const v = edgeVisits(cov, host);
     row.visits += v.visits;
     row.bounces += v.bounces;
     row.visit_ms += v.visit_ms;
   }
 
-  // Distinct counts across the hours and the part-hours together. These
-  // combine both scopes, so each is bound with just the names it uses.
-  const both = { ...hs.p, ...es.p };
-  const count = (sql) => db.prepare(sql).get(bindFor(sql, both)).n;
-  row.hosts = count(
+  row.hosts = get(
     `SELECT COUNT(*) AS n FROM (
        SELECT host FROM rollup WHERE ${hs.where}
-       UNION SELECT host FROM events WHERE ${es.where})`
-  );
+       UNION SELECT host FROM rollup_minute WHERE ${where.minutes}
+       UNION SELECT host FROM events WHERE ${where.seconds}
+       UNION SELECT host FROM events WHERE ${where.unrolled})`
+  ).n;
   // Visitors: exact per hour from visitor_seen, and from the page views'
   // visitor ids in the part-hours; folded days add their own (see seenVisitors).
-  row.visitors += count(
+  row.visitors += get(
     `SELECT COUNT(*) AS n FROM (
        SELECT visitor FROM visitor_seen WHERE bucket >= @hFrom AND bucket < @hTo ${hostClause(host)}
-       UNION SELECT visitor FROM events WHERE ${es.where} AND visitor IS NOT NULL)`
-  );
-  // One select per granularity, so each can use the dims indexes (see the
-  // note at the top of this file).
-  const uniqueIps = count(
-    `SELECT COUNT(*) AS n FROM (
-       SELECT value FROM dims
-        WHERE gran = 'h' AND dim = 'ip' AND bucket >= @hFrom AND bucket < @hTo ${hostClause(host)}
-       UNION SELECT value FROM dims
-        WHERE gran = 'd' AND dim = 'ip' AND bucket >= @from AND bucket < @to ${hostClause(host)}
-       UNION SELECT ip FROM events WHERE ${es.where} AND ip IS NOT NULL AND ip != '')`
-  );
+       UNION SELECT visitor FROM events
+        WHERE visitor IS NOT NULL AND ${inRanges('ts', cov.edges, 'v', p)} ${hostClause(host)})`
+  ).n;
 
   const ok = row.c2xx + row.c3xx;
   return {
     ...row,
     // Where the counts start: later than `fromMs` only when the leading
-    // part-hour is older than the stored requests (see coverage()).
+    // part-hour is older than the per-minute counters (see coverage()).
     covered_from: cov.from,
-    unique_ips: uniqueIps,
+    unique_ips: uniqueIps(db, p, hs, minutes, where, host),
     avg_ms: row.requests ? row.dur_sum / row.requests : 0,
     success_rate: row.requests ? ok / row.requests : 0,
     error_rate: row.requests ? (row.c4xx + row.c5xx) / row.requests : 0,
@@ -298,8 +360,14 @@ function seenVisitors(params, host, step = null) {
 export function activeVisitors(host = null, minutes = 5) {
   const params = { since: Date.now() - minutes * 60_000 };
   if (host) params.host = host;
+  // A visit this recent is still open (it closes after VISIT_GAP_MS quiet),
+  // and saying so lets SQLite use the index of open visits rather than read
+  // every visit of the last day.
   return getDb()
-    .prepare(`SELECT COUNT(DISTINCT visitor) AS n FROM visits WHERE end_ts >= @since ${hostClause(host)}`)
+    .prepare(
+      `SELECT COUNT(DISTINCT visitor) AS n FROM visits
+        WHERE closed = 0 AND end_ts >= @since ${hostClause(host)}`
+    )
     .get(params).n;
 }
 
@@ -311,8 +379,38 @@ export function series(fromMs, toMs, host = null, stepSec = null) {
   const db = getDb();
   const step = stepSec ?? chooseStep(fromMs, toMs);
 
+  if (step < 3600 && step % 60 === 0) {
+    // Whole minutes from rollup_minute, plus the requests not rolled up yet;
+    // visitors from the page views' visitor ids.
+    const p = { from: fromMs, to: toMs, step, mFrom: Math.floor(fromMs / MINUTE_MS) * 60, mTo: toMs / 1000 };
+    if (host) p.host = host;
+    const all = (sql) => db.prepare(sql).all(bindFor(sql, p));
+    const at = `CAST(ts / (@step * 1000) AS INTEGER) * @step`;
+    const points = new Map();
+    const point = (bucket) => {
+      if (!points.has(bucket)) {
+        points.set(bucket, {
+          bucket, requests: 0, bytes_out: 0, bytes_in: 0, dur_sum: 0, dur_max: 0,
+          c1xx: 0, c2xx: 0, c3xx: 0, c4xx: 0, c5xx: 0, bots: 0, pageviews: 0, visitors: 0,
+        });
+      }
+      return points.get(bucket);
+    };
+    for (const r of [
+      ...all(`SELECT CAST(bucket / @step AS INTEGER) * @step AS bucket, ${SUM_COUNTERS}
+                FROM rollup_minute WHERE bucket >= @mFrom AND bucket < @mTo ${hostClause(host)} GROUP BY 1`),
+      ...all(`SELECT ${at} AS bucket, ${EVENT_COUNTERS}
+                FROM events WHERE rolled = 0 AND ts >= @from AND ts < @to ${hostClause(host)} GROUP BY 1`),
+    ]) addCounters(point(r.bucket), r);
+    for (const r of all(
+      `SELECT ${at} AS bucket, COUNT(DISTINCT visitor) AS visitors
+         FROM events WHERE visitor IS NOT NULL AND ts >= @from AND ts < @to ${hostClause(host)} GROUP BY 1`
+    )) point(r.bucket).visitors = r.visitors;
+    return { step, points: [...points.values()].sort((a, b) => a.bucket - b.bucket) };
+  }
+
   if (step < 3600) {
-    // Minute resolution comes straight from the retained event rows.
+    // Steps that are not whole minutes, straight from the stored requests.
     const params = { from: fromMs, to: toMs, step };
     if (host) params.host = host;
     const rows = db

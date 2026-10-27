@@ -13,6 +13,7 @@ import { extensionOf, refererHost, latencyBucket, parseLine, VISIT_COLUMNS } fro
 import { isPageview, isExternalReferer, UTM_KEYS } from './traffic.js';
 import { Sessionizer, VISIT_GAP_MS } from './visits.js';
 import { readRaw } from '../util/rawlog.js';
+import { addPlace, encode, mergeEncoded, newSketch, placeOf } from '../util/hll.js';
 
 const log = logger('rollup');
 
@@ -20,6 +21,7 @@ export const HOUR = 3600;
 export const DAY = 86400;
 
 export const hourBucket = (tsMs) => Math.floor(tsMs / 3_600_000) * HOUR;
+export const minuteBucket = (tsMs) => Math.floor(tsMs / 60_000) * 60;
 export const dayBucket = (tsMs) => Math.floor(tsMs / 86_400_000) * DAY;
 
 let stmts = null;
@@ -106,6 +108,30 @@ function prep() {
          org = COALESCE(asn_names.org, excluded.org),
          updated_at = excluded.updated_at`
     ),
+    minute: db.prepare(
+      `INSERT INTO rollup_minute (bucket, host, requests, bytes_out, bytes_in, dur_sum, dur_max,
+                                  c1xx, c2xx, c3xx, c4xx, c5xx, bots, pageviews)
+         VALUES (@bucket, @host, @requests, @bytes_out, @bytes_in, @dur_sum, @dur_max,
+                 @c1xx, @c2xx, @c3xx, @c4xx, @c5xx, @bots, @pageviews)
+       ON CONFLICT(bucket, host) DO UPDATE SET
+         requests  = rollup_minute.requests  + excluded.requests,
+         bytes_out = rollup_minute.bytes_out + excluded.bytes_out,
+         bytes_in  = rollup_minute.bytes_in  + excluded.bytes_in,
+         dur_sum   = rollup_minute.dur_sum   + excluded.dur_sum,
+         dur_max   = MAX(rollup_minute.dur_max, excluded.dur_max),
+         c1xx = rollup_minute.c1xx + excluded.c1xx,
+         c2xx = rollup_minute.c2xx + excluded.c2xx,
+         c3xx = rollup_minute.c3xx + excluded.c3xx,
+         c4xx = rollup_minute.c4xx + excluded.c4xx,
+         c5xx = rollup_minute.c5xx + excluded.c5xx,
+         bots = rollup_minute.bots + excluded.bots,
+         pageviews = rollup_minute.pageviews + excluded.pageviews`
+    ),
+    sketch: db.prepare('SELECT regs FROM ip_sketch WHERE gran = ? AND host = ? AND bucket = ?'),
+    setSketch: db.prepare(
+      `INSERT INTO ip_sketch (bucket, gran, host, regs) VALUES (?, ?, ?, ?)
+       ON CONFLICT(gran, host, bucket) DO UPDATE SET regs = excluded.regs`
+    ),
     seen: db.prepare('INSERT OR IGNORE INTO visitor_seen (bucket, host, visitor) VALUES (?, ?, ?)'),
     setVisitor: db.prepare('UPDATE events SET visitor = ? WHERE id = ?'),
     // Closing visits: see closeVisits().
@@ -135,6 +161,23 @@ function visitShare(v, sign) {
   };
 }
 
+/** Add one request to a row of headline counters (rollup or rollup_minute). */
+function countRequest(r, ev) {
+  r.requests += 1;
+  r.bytes_out += ev.bytes_out || 0;
+  r.bytes_in += ev.bytes_in || 0;
+  const d = ev.dur_ms ?? 0;
+  r.dur_sum += d;
+  if (d > r.dur_max) r.dur_max = d;
+  const cls = Math.floor((ev.status || 0) / 100);
+  if (cls === 1) r.c1xx += 1;
+  else if (cls === 2) r.c2xx += 1;
+  else if (cls === 3) r.c3xx += 1;
+  else if (cls === 4) r.c4xx += 1;
+  else if (cls === 5) r.c5xx += 1;
+  if (ev.bot) r.bots += 1;
+}
+
 /**
  * Accumulator that collapses a batch of events before touching the database.
  * Exported for the self-test.
@@ -149,6 +192,34 @@ export class Accumulator {
     this.sessions = new Sessionizer((v, sign) => this.visitDelta(v, sign), store);
     this.seen = new Map(); // hour+host+visitor -> [hour, host, visitor]
     this.visitorOfEvent = new Map(); // event id -> visitor
+    this.minutes = new Map(); // minute+host -> counters
+    this.sketches = new Map(); // gran+bucket+host -> [gran, bucket, host, registers]
+  }
+
+  minute(bucket, host) {
+    const key = `${bucket}${SEP}${host}`;
+    let r = this.minutes.get(key);
+    if (!r) {
+      r = {
+        bucket, host,
+        requests: 0, bytes_out: 0, bytes_in: 0, dur_sum: 0, dur_max: 0,
+        c1xx: 0, c2xx: 0, c3xx: 0, c4xx: 0, c5xx: 0, bots: 0, pageviews: 0,
+      };
+      this.minutes.set(key, r);
+    }
+    return r;
+  }
+
+  /** Count a client address into its minute's and hour's sketches, per host and overall. */
+  address(minute, hour, host, ip) {
+    if (!ip) return;
+    const place = placeOf(ip);
+    for (const [gran, bucket, h] of [['m', minute, host], ['m', minute, ''], ['h', hour, host], ['h', hour, '']]) {
+      const key = `${gran}${SEP}${bucket}${SEP}${h}`;
+      let s = this.sketches.get(key);
+      if (!s) this.sketches.set(key, (s = [gran, bucket, h, newSketch()]));
+      addPlace(s[3], place);
+    }
   }
 
   row(bucket, host) {
@@ -167,20 +238,8 @@ export class Accumulator {
   }
 
   bump(bucket, host, ev) {
-    const r = this.row(bucket, host);
-    r.requests += 1;
-    r.bytes_out += ev.bytes_out || 0;
-    r.bytes_in += ev.bytes_in || 0;
-    const d = ev.dur_ms ?? 0;
-    r.dur_sum += d;
-    if (d > r.dur_max) r.dur_max = d;
-    const cls = Math.floor((ev.status || 0) / 100);
-    if (cls === 1) r.c1xx += 1;
-    else if (cls === 2) r.c2xx += 1;
-    else if (cls === 3) r.c3xx += 1;
-    else if (cls === 4) r.c4xx += 1;
-    else if (cls === 5) r.c5xx += 1;
-    if (ev.bot) r.bots += 1;
+    countRequest(this.row(bucket, host), ev);
+    countRequest(this.minute(minuteBucket(ev.ts), host), ev);
   }
 
   dim(bucket, host, dim, value, ev) {
@@ -243,6 +302,7 @@ export class Accumulator {
     const host = ev.host;
 
     this.bump(bucket, host, ev);
+    this.address(minuteBucket(ev.ts), bucket, host, ev.ip);
 
     const seen = this.hosts.get(host);
     if (!seen) this.hosts.set(host, [ev.ts, ev.ts]);
@@ -286,6 +346,7 @@ export class Accumulator {
     const ref = ev.referer_host ?? (ev.referer ? refererHost(ev.referer) : null);
     if (isPageview(ev)) {
       this.row(bucket, host).pageviews += 1;
+      this.minute(minuteBucket(ev.ts), host).pageviews += 1;
       this.dim(bucket, host, 'page', ev.path, ev);
       const refsite = isExternalReferer(host, ref) && ref !== '(unknown)' ? ref : null;
       const visitor = this.sessions.add(ev, refsite);
@@ -303,6 +364,11 @@ export class Accumulator {
     const now = Date.now();
     this.sessions.persist(now);
     for (const r of this.rollups.values()) s.rollup.run(r);
+    for (const r of this.minutes.values()) s.minute.run(r);
+    for (const [gran, bucket, host, regs] of this.sketches.values()) {
+      mergeEncoded(regs, s.sketch.get(gran, host, bucket)?.regs);
+      s.setSketch.run(bucket, gran, host, encode(regs));
+    }
     for (const d of this.dims.values()) s.dim.run(d);
     for (const [bucket, host, visitor] of this.seen.values()) s.seen.run(bucket, host, visitor);
     for (const [id, visitor] of this.visitorOfEvent) s.setVisitor.run(visitor, id);

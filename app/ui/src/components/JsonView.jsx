@@ -23,7 +23,7 @@ export function JsonView({ value, raw }) {
       text = String(raw ?? '');
     }
   } else {
-    text = String(raw ?? '(no raw line stored — it may have aged out of retention)');
+    text = String(raw ?? '(the original log line is no longer stored — lines can be kept for less time than their requests, on the Settings page)');
   }
 
   const nodes = [];

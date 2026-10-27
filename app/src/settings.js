@@ -19,6 +19,10 @@ const DEFINITIONS = {
   // Largest the database may grow, in MB. 0 = no limit. When reached, the
   // oldest data is pruned whatever the retention settings say.
   maxDbSizeMb: { fallback: () => config.retention.maxDbSizeMb },
+  // Hours to keep a stored request's original log line — most of what a
+  // request takes. 0 = as long as the request. Shorter keeps more requests
+  // in the same space; the request detail then shows only the parsed fields.
+  rawLineHours: { fallback: () => config.retention.rawLineHours },
 };
 
 let cache = null;
@@ -77,6 +81,10 @@ export function validateSettings(s) {
   if (hours === 0 && size === 0) {
     problems.rawRetentionHours = 'Keeping requests until the size limit needs a size limit to be set.';
   }
+  const lines = s.rawLineHours ?? 0;
+  if (!Number.isInteger(lines) || lines < 0 || lines > MAX_RETENTION_HOURS) {
+    problems.rawLineHours = 'Enter a whole number of hours from 1 to 87,600, or keep them as long as the requests.';
+  }
   return problems;
 }
 
@@ -112,6 +120,12 @@ export function rawRetentionMs() {
   return hours > 0 ? hours * HOUR_MS : Infinity;
 }
 
+/** How long original log lines are kept, in ms; Infinity = as long as their request. */
+export function rawLineRetentionMs() {
+  const hours = getSettings().rawLineHours;
+  return hours > 0 ? hours * HOUR_MS : Infinity;
+}
+
 /** The size limit in bytes, or null for none. */
 export function maxDbBytes() {
   const mb = getSettings().maxDbSizeMb;
@@ -128,5 +142,6 @@ export function retentionInfo() {
     hours: s.rawRetentionHours > 0 ? s.rawRetentionHours : null,
     untilFull: s.rawRetentionHours === 0,
     maxDbSizeMb: s.maxDbSizeMb || null,
+    lineHours: s.rawLineHours > 0 ? s.rawLineHours : null,
   };
 }

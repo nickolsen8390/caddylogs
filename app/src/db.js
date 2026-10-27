@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
 import { logger } from './util/log.js';
+import { buildMinutesFromEvents } from './ingest/minutes.js';
 
 const log = logger('db');
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -169,6 +170,23 @@ function migrate(db) {
     db.exec('ALTER TABLE sessions ADD COLUMN persistent INTEGER NOT NULL DEFAULT 0');
     log.info('migration: added sessions.persistent');
   }
+
+  // 1.9.0: per-minute counters and client-address sketches (schema.sql),
+  // for what was counted before them. Before the ingester starts, so each
+  // request is in once.
+  if (!db.prepare("SELECT 1 FROM meta WHERE key = 'minutes_built'").get()) {
+    const started = Date.now();
+    log.info('migration: building per-minute statistics from the stored requests (once; minutes on a large database)');
+    const read = db.transaction(() => {
+      const n = buildMinutesFromEvents(db);
+      db.prepare("INSERT INTO meta(key, value) VALUES('minutes_built', ?)").run(String(Date.now()));
+      return n;
+    })();
+    log.info('migration: per-minute statistics built', { requests: read, seconds: Math.round((Date.now() - started) / 1000) });
+  }
+  // Visitors at minute resolution, for charts and the part-hours of a
+  // window. Page views only, so it stays small.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_events_visitor ON events(ts, visitor) WHERE visitor IS NOT NULL');
 
   // Indexes for the request explorer's filters. Created here rather than in
   // schema.sql so they also land on databases that predate them.

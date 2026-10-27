@@ -4,6 +4,52 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org): a new major version (2.0.0) is the
 only kind that can require you to change anything when upgrading.
 
+## [1.9.0] — 2026-10-27
+
+### Added
+
+- Settings: keep each request's original log line for less time than the
+  request (`RAW_LINE_RETENTION_HOURS` to start with). The line is most of
+  what a stored request takes — on a busy proxy, 9 GB of a 10 GB database —
+  so keeping it for a few hours holds several times as many requests in the
+  same space. Older requests can still be searched and drilled into; their
+  detail shows the fields read from the line. A shortened setting is
+  applied in chunks, within ten minutes.
+
+### Changed
+
+- Much faster pages on a busy server. With millions of requests a day, a
+  6-hour Dashboard took most of a minute: its totals and chart read the
+  individual requests behind them, millions of rows. They now come from new
+  per-minute counters, kept for 7 days; only the last few seconds not
+  counted yet, and the seconds either side of the window's first and last
+  whole minute, are read from the requests. In a test with a day of 4.5
+  million requests, a 6-hour window's totals took a sixth of the time, its
+  previous period's a seventh and its chart a tenth, with every count the
+  same. These no longer grow with the number of requests stored.
+- The pages' queries run in worker threads (`QUERY_WORKERS`, 2 by default),
+  so a slow one no longer freezes the rest of the interface: sign-in, the
+  live stream and other pages carry on, and the API stops timing out.
+  Identical requests at the same moment share one answer, which is reused
+  for 10 seconds — several open tabs refreshing every 30 seconds cost one
+  query, not one each.
+- The upgrade builds the per-minute counters from the requests already
+  stored, once, at startup; on a large database this takes a few minutes
+  before the interface comes up.
+
+### Fixed
+
+- Unique clients was far too low on busy days. It counted the addresses in
+  the hourly statistics, which maintenance trims to the busiest few
+  thousand an hour when an hour has more — and an hour of one-time IPv6
+  addresses has hundreds of thousands. Addresses are now counted with
+  HyperLogLog sketches, per minute, hour and day: accurate to about 2%
+  however many there are, in 4 KB an hour. Hours from before the upgrade
+  still count what their statistics list, except those with requests still
+  stored, which are counted from those.
+- "Active visitors" on the Traffic page read every visit of the last day
+  to find those of the last five minutes.
+
 ## [1.8.0] — 2026-10-27
 
 ### Changed
@@ -524,6 +570,7 @@ First public release.
   filesystem, no Linux capabilities and `no-new-privileges`.
 - Works on phones: slide-in menu, readable request lists, folding filters.
 
+[1.9.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.9.0
 [1.8.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.8.0
 [1.7.3]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.7.3
 [1.7.2]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.7.2
