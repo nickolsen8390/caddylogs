@@ -4,6 +4,25 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org): a new major version (2.0.0) is the
 only kind that can require you to change anything when upgrading.
 
+## [1.8.0] — 2026-10-27
+
+### Changed
+
+- IP enrichment shares lookups across whole routes, not just /48 blocks.
+  Proxy networks spread one-time IPv6 addresses at random over a /29 — half
+  a million /48s — so 1.7.0's sharing by /48 saved almost nothing on them,
+  and every address cost a lookup. The routes notoolkit names are now
+  remembered, and an address inside one is answered without a lookup. In a
+  test with 20,000 random addresses across two /29s, lookups fell from
+  about 16,000 to about 300.
+  - A route can contain a more specific route of another network. A route
+    is shared only after three lookups inside it agree; every 100th
+    address it would answer is looked up anyway; and when the MaxMind ASN
+    database is installed, any address it places in another network is
+    looked up too. With MaxMind, every answer in the test was right;
+    without it, a more specific route that turns up late can be missed for
+    a while, and its addresses are given the wider route's network.
+
 ## [1.7.3] — 2026-10-27
 
 ### Fixed
@@ -505,6 +524,7 @@ First public release.
   filesystem, no Linux capabilities and `no-new-privileges`.
 - Works on phones: slide-in menu, readable request lists, folding filters.
 
+[1.8.0]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.8.0
 [1.7.3]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.7.3
 [1.7.2]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.7.2
 [1.7.1]: https://github.com/nickolsen8390/caddylogs/releases/tag/v1.7.1

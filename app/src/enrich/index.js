@@ -16,11 +16,22 @@
 // which matters for IPv6, where clients use a fresh address for almost every
 // connection. It is shared only when the prefix it names covers the whole
 // block; an answer naming a longer prefix is kept to its own address.
+//
+// Blocks are not enough when clients are spread over a whole route: proxy
+// networks hand out addresses at random across a /29, half a million /48s.
+// So the routes answers name are remembered too, and an address inside one
+// gets its answer without a lookup (see routeFor). A route can hold a more
+// specific one, another network's, which only a lookup inside it reveals: a
+// route is shared once three lookups inside it have named it, and every
+// 100th address that would be answered from it is looked up instead, as is
+// any MaxMind places in another network (when its ASN database is there). One
+// that names a more specific route sends the wider one back to be confirmed
+// again; one that names anything else retires it.
 
 import { getDb } from '../db.js';
 import { config } from '../config.js';
 import { logger } from '../util/log.js';
-import { blockOf, isPrivateIp, prefixCoversBlock } from '../util/net.js';
+import { blockBits, blockOf, isPrivateIp, parsePrefix, prefixCoversBlock, prefixKeyOf } from '../util/net.js';
 import { lookupCountry, lookupAsn as maxmindAsn, maxmindStatus } from './maxmind.js';
 import { lookupIp, lookupAsnDetail, NOTOOLKIT } from './notoolkit.js';
 
@@ -134,11 +145,77 @@ function remember(ip, rec) {
 /** Whether an answer can stand for every address in the block of `ip`. */
 const coversBlock = (nt, ip) => Boolean(nt) && prefixCoversBlock(nt.as_prefix, ip);
 
+const routes = new Map(); // prefix key -> { nt, len, named, hits, at } (bounded)
+const routeLens = { 4: [], 6: [] }; // prefix lengths in `routes`, longest first
+const ROUTE_CONFIRMATIONS = 3;
+const ROUTE_RECHECK_EVERY = 100;
+
+/** The most specific remembered route `ip` is in: { key, route }, or null. */
+function routeFor(ip) {
+  const family = ip.includes(':') ? 6 : 4;
+  for (const len of routeLens[family]) {
+    const key = prefixKeyOf(ip, len);
+    const route = key && routes.get(key);
+    if (route) return { key, route };
+  }
+  return null;
+}
+
+/** Whether a route may answer for addresses inside it without a lookup. */
+const routeUsable = (r) =>
+  r.named >= ROUTE_CONFIRMATIONS && Date.now() - r.at < config.enrich.ttlDays * 86_400_000;
+
 /**
- * notoolkit's answer for `ip`, from another address in its block when one is
- * known or being looked up, otherwise from the API.
+ * Learn from a lookup of `ip`: `inside` is the route it was found in
+ * beforehand (routeFor), and `nt` what the lookup said.
  */
-async function lookupShared(ip, urgent) {
+function learnRoute(ip, nt, inside) {
+  const named = parsePrefix(nt?.as_prefix);
+  if (inside && inside.key !== named?.key) {
+    if (named && named.len > inside.route.len) {
+      // A more specific route inside it: that one now answers for its own
+      // addresses, and this one is shared again only once confirmed again.
+      inside.route.named = 0;
+    } else {
+      // The route has changed or gone.
+      routes.delete(inside.key);
+    }
+    log.debug('route answered differently inside it', { route: inside.key, named: nt?.as_prefix ?? null });
+  }
+  // Only routes wider than a block: a block's own answer is shared by block.
+  if (!named || named.len >= blockBits(named.v6) || prefixKeyOf(ip, named.len) !== named.key) return;
+  const known = routes.get(named.key);
+  if (known) {
+    // The same route from another origin starts counting again.
+    known.named = known.nt.asn === nt.asn ? known.named + 1 : 1;
+    known.nt = nt;
+    known.at = Date.now();
+    return;
+  }
+  makeRoom(routes);
+  routes.set(named.key, { nt, len: named.len, named: 1, hits: 0, at: Date.now() });
+  const lens = routeLens[named.v6 ? 6 : 4];
+  if (!lens.includes(named.len)) {
+    lens.push(named.len);
+    lens.sort((a, b) => b - a);
+  }
+}
+
+/** A lookup from the API, learning the route it names. */
+async function lookupAndLearn(ip, urgent, inside) {
+  stats.lookups += 1;
+  const nt = await lookupIp(ip, urgent);
+  learnRoute(ip, nt, inside);
+  return nt;
+}
+
+/**
+ * notoolkit's answer for `ip`, from another address in its block or route
+ * when one is known or being looked up, otherwise from the API. `localAsn`
+ * is MaxMind's network for it, if any: one that disagrees with the route's
+ * marks an address worth a lookup, likely in a more specific route.
+ */
+async function lookupShared(ip, urgent, localAsn = null) {
   const block = blockOf(ip);
   if (!block) return lookupIp(ip, urgent);
 
@@ -147,6 +224,12 @@ async function lookupShared(ip, urgent) {
     stats.shared += 1;
     return known.nt;
   }
+  const inside = routeFor(ip);
+  if (inside && routeUsable(inside.route) && (!localAsn || localAsn === inside.route.nt.asn)
+      && ++inside.route.hits % ROUTE_RECHECK_EVERY !== 0) {
+    stats.shared += 1;
+    return inside.route.nt;
+  }
   const running = blockInFlight.get(block);
   if (running) {
     const nt = await running.catch(() => null);
@@ -154,12 +237,10 @@ async function lookupShared(ip, urgent) {
       stats.shared += 1;
       return nt;
     }
-    stats.lookups += 1;
-    return lookupIp(ip, urgent);
+    return lookupAndLearn(ip, urgent, inside);
   }
 
-  stats.lookups += 1;
-  const p = lookupIp(ip, urgent);
+  const p = lookupAndLearn(ip, urgent, inside);
   blockInFlight.set(block, p);
   try {
     const nt = await p;
@@ -229,7 +310,7 @@ async function resolveOne(ip, urgent = false) {
     }
 
     try {
-      const nt = await lookupShared(ip, urgent);
+      const nt = await lookupShared(ip, urgent, base.asn);
       const rec = nt
         ? {
             ...base,

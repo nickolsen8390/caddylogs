@@ -132,3 +132,40 @@ export function prefixCoversBlock(prefix, ip) {
   if (!Number.isInteger(len) || len < 0 || !ip) return false;
   return len <= (isIPv4(ip) ? BLOCK_BITS.v4 : BLOCK_BITS.v6);
 }
+
+/** An address as { v6, n: BigInt }, or null. */
+function addressBits(ip) {
+  if (!ip) return null;
+  if (isIPv4(ip)) {
+    const n = v4ToInt(ip);
+    return n === null ? null : { v6: false, n: BigInt(n) };
+  }
+  if (ip.includes('.')) return null;
+  const n = v6ToBigInt(ip);
+  return n === null ? null : { v6: true, n };
+}
+
+/**
+ * The `len`-bit network `ip` is in, as a key that prefixKey gives for the
+ * same network however it is written: "6:2a104a0/29". null if not an address.
+ */
+export function prefixKeyOf(ip, len) {
+  const a = addressBits(ip);
+  const width = a?.v6 ? 128 : 32;
+  if (!a || !Number.isInteger(len) || len < 0 || len > width) return null;
+  return `${a.v6 ? 6 : 4}:${(a.n >> BigInt(width - len)).toString(16)}/${len}`;
+}
+
+/** A prefix ("2a10:4a00::/29") as { key, len, v6 }, or null. */
+export function parsePrefix(prefix) {
+  const [addr, bits, extra] = String(prefix ?? '').split('/');
+  const len = Number(bits);
+  if (extra !== undefined || bits === undefined || !Number.isInteger(len)) return null;
+  const key = prefixKeyOf(addr, len);
+  return key ? { key, len, v6: key[0] === '6' } : null;
+}
+
+/** Bits of the block an address of this family is shared in (blockOf). */
+export function blockBits(v6) {
+  return v6 ? BLOCK_BITS.v6 : BLOCK_BITS.v4;
+}

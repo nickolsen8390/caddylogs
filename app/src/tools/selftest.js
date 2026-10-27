@@ -5,7 +5,9 @@
 //
 //   docker compose run --rm --no-deps app node src/tools/selftest.js
 
-import { blockOf, cidrMatcher, isPrivateIp, normalizeIp, isIPv4, prefixCoversBlock } from '../util/net.js';
+import {
+  blockBits, blockOf, cidrMatcher, isPrivateIp, normalizeIp, isIPv4, parsePrefix, prefixCoversBlock, prefixKeyOf,
+} from '../util/net.js';
 import { parseLine, latencyBucket, extensionOf, refererHost } from '../ingest/parser.js';
 import { parseUserAgent } from '../ingest/useragent.js';
 import {
@@ -108,6 +110,22 @@ group('Network blocks (shared enrichment lookups)', () => {
   ok('a /24 covers an IPv4 block', prefixCoversBlock('203.0.113.0/24', '203.0.113.9'), true);
   ok('a /25 does not', prefixCoversBlock('203.0.113.0/25', '203.0.113.9'), false);
   ok('no prefix shares nothing', prefixCoversBlock(null, '203.0.113.9'), false);
+
+  // Routes (shared across a whole announced prefix).
+  const route = parsePrefix('2a10:4a00::/29');
+  ok('a /29 parses', [route?.len, route?.v6], [29, true]);
+  ok('addresses across a /29 are in it', [
+    prefixKeyOf('2a10:4a01:2e8e:ab78:d358:5e51:cd4c:b46c', 29),
+    prefixKeyOf('2a10:4a06:de71:7c7c:fdd:9f7:70ac:8f84', 29),
+  ], [route.key, route.key]);
+  ok('the next /29 is not', prefixKeyOf('2a10:4a08::1', 29) === route.key, false);
+  ok('written long or short agree', parsePrefix('2a10:4a00:0:0::/29')?.key, route.key);
+  ok('IPv4 /15', prefixKeyOf('198.19.200.1', 15), parsePrefix('198.18.0.0/15').key);
+  ok('IPv4 and IPv6 never collide', parsePrefix('0.0.0.0/0')?.key === parsePrefix('::/0')?.key, false);
+  ok('no length', parsePrefix('2a10:4a00::'), null);
+  ok('too long', parsePrefix('203.0.113.0/33'), null);
+  ok('garbage', parsePrefix('nonsense/12'), null);
+  ok('block sizes', [blockBits(false), blockBits(true)], [24, 48]);
 });
 
 group('Caddy JSON access log parsing', () => {
